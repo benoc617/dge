@@ -1,0 +1,80 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Player {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  isAI        Boolean  @default(false)
+  aiPersona   String?  // Gemini persona prompt for AI players
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  empire      Empire?
+  turns       TurnLog[]
+}
+
+model Empire {
+  id            String   @id @default(cuid())
+  playerId      String   @unique
+  player        Player   @relation(fields: [playerId], references: [id])
+
+  // Resources
+  credits       Int      @default(10000)
+  ore           Int      @default(500)
+  food          Int      @default(500)
+  fuel          Int      @default(500)
+
+  // Fleet
+  fighters      Int      @default(10)
+  transports    Int      @default(2)
+  warships      Int      @default(0)
+
+  // Planets
+  planets       Planet[]
+
+  // Turn management
+  turnsLeft     Int      @default(100)
+  turnReset     DateTime @default(now())
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Planet {
+  id            String   @id @default(cuid())
+  empireId      String
+  empire        Empire   @relation(fields: [empireId], references: [id])
+
+  name          String
+  sector        Int
+  population    Int      @default(1000)
+  ore           Int      @default(100)
+  food          Int      @default(100)
+  defenses      Int      @default(0)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model TurnLog {
+  id        String   @id @default(cuid())
+  playerId  String
+  player    Player   @relation(fields: [playerId], references: [id])
+  action    String
+  details   Json?
+  createdAt DateTime @default(now())
+}
+
+model GameEvent {
+  id        String   @id @default(cuid())
+  type      String   // "combat", "trade", "exploration", etc.
+  message   String
+  details   Json?
+  createdAt DateTime @default(now())
+}
