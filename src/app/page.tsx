@@ -95,7 +95,7 @@ export default function Home() {
       <main className="min-h-screen bg-black text-green-400 flex flex-col items-center justify-center font-mono">
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold tracking-widest text-yellow-400 mb-2">
-            ★ SOLAR REALMS ELITE ★
+            ★ SOLAR REALMS EXTREME ★
           </h1>
           <p className="text-green-600 text-sm tracking-widest">CONQUER THE GALAXY</p>
         </div>
@@ -133,7 +133,7 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-black text-green-400 font-mono p-4">
       <header className="border-b border-green-800 pb-2 mb-4 flex justify-between items-center">
-        <h1 className="text-yellow-400 font-bold tracking-widest">★ SOLAR REALMS ELITE ★</h1>
+        <h1 className="text-yellow-400 font-bold tracking-widest">★ SOLAR REALMS EXTREME ★</h1>
         <span className="text-green-600 text-sm">Commander: {playerName}</span>
       </header>
 

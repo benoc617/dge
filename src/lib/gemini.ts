@@ -9,7 +9,7 @@ export async function getAIMove(
   empireState: object,
   gameEvents: string[]
 ): Promise<{ action: string; target?: string; amount?: number; reasoning: string }> {
-  const prompt = `You are an AI commander in a space strategy game called Solar Realms Elite.
+  const prompt = `You are an AI commander in a space strategy game called Solar Realms Extreme.
 Your persona: ${persona}
 
 Your current empire state:
