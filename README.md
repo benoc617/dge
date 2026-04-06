@@ -24,8 +24,8 @@ docker compose up --build
 ```
 
 - **App:** [http://localhost:3000](http://localhost:3000) — Operators: [http://localhost:3000/admin](http://localhost:3000/admin) · [http://localhost:3000/admin/users](http://localhost:3000/admin/users) (accounts)
-- **Postgres on the host:** `localhost:5433` (user `postgres`, password `postgres`, database `srx`) — use this in `DATABASE_URL` if you run **Prisma CLI on the host** (`migrate dev`, `studio`) against the same database.
-- On startup the **app** container runs `prisma migrate deploy` (apply committed migrations). For new migrations from the host, run `npx prisma migrate dev` with `DATABASE_URL` pointing at port **5433**, or `docker compose exec app npx prisma migrate dev` (interactive).
+- **Postgres on the host:** `localhost:5433` (user `postgres`, password `postgres`, database `srx`) — use this in `DATABASE_URL` if you run **Prisma CLI on the host** (`db push`, `studio`) against the same database.
+- On startup the **app** container runs `prisma db push` (sync schema to DB). No migration files — schema changes go directly to `schema.prisma` and are pushed.
 - To seed **SystemSettings** from your `.env` into the DB (for `/admin` overrides): **`docker compose exec app npm run seed:system-settings`** (recommended; matches the app container). Alternative on the host: `DATABASE_URL="postgresql://postgres:postgres@localhost:5433/srx" npm run seed:system-settings`
 
 Stop: `docker compose down` · Logs: `npm run docker:logs`
@@ -49,7 +49,7 @@ GEMINI_MODEL="gemini-2.5-flash"
 EOF
 
 npm install
-npx prisma migrate dev
+npx prisma db push
 npm run seed:system-settings   # copies GEMINI_* from .env into SystemSettings (optional; app reads env first)
 npm run dev
 ```
@@ -142,11 +142,12 @@ src/
     EventLog.tsx                     # Color-coded turn report and event log
     Leaderboard.tsx                  # Galactic Powers (Rk, Commander, Prt, Worth, Pop, Plt, Turns, Mil) + click-to-target
   lib/
-    game-engine.ts                   # Core: 19-step turn tick + 30 action types; blocks attacks/covert vs protected rivals
+    game-engine.ts                   # Core: 19-step turn tick + 35 action types; blocks attacks/covert vs protected rivals
     empire-prisma.ts                 # Prisma-safe empire partial updates (scalar lists)
     game-constants.ts                # All balance values (single source of truth)
     turn-order.ts                    # Sequential turns; lobby = no active turn until first human (admin-staged galaxies)
     admin-auth.ts                    # Admin login + requireAdmin for /api/admin/*
+    auth.ts                          # Player/account authentication helpers
     create-ai-players.ts             # Shared AI creation (register AI setup + admin-staged galaxies)
     ai-builtin-config.ts             # Fixed AI commander names / persona keys
     ai-runner.ts                     # Sequential AI turn execution
@@ -158,7 +159,15 @@ src/
     gemini.ts                        # AI prompts (neutral rival targeting) + local fallback
     rng.ts                           # Seedable PRNG (mulberry32)
     simulation.ts                    # Headless simulation engine
+    simulation-harness.ts            # Full session simulation runner (sequential + simultaneous)
     prisma.ts                        # Database client
+    player-auth.ts                   # Player credential resolution (UserAccount-aware)
+    player-init.ts                   # Starter empire/planet creation (shared by register, join, AI setup)
+    db-context.ts                    # AsyncLocalStorage DB context + advisory lock for door-game
+    door-game-turns.ts               # Simultaneous turn mechanics (open/close/rollRound/AI drain)
+    delete-game-session.ts           # Session + player cascade cleanup
+    system-settings.ts               # SystemSettings (Gemini key masking for admin API)
+    ui-tooltips.ts                   # Tooltip text for Galactic Powers, Empire Status, Command Center
     critical-events.ts               # Situation-report event tiers (critical / warning / info)
 tests/
   unit/                              # Pure logic (rng, constants, research, combat, espionage, empire-prisma, turn-order lobby, gemini pickRival, …)
@@ -168,7 +177,7 @@ scripts/
   deploy-docker-dev.sh               # docker compose restart app (local bind mount; no remote)
   simulate.ts                        # CLI runner for simulations
   fix-tsc-bin.js                     # postinstall: repair broken node_modules/.bin/tsc symlink
-  docker-entrypoint-dev.sh           # Compose app entry: prisma generate, migrate deploy, next dev
+  docker-entrypoint-dev.sh           # Compose app entry: prisma generate, db push, next dev
   docker-reset-node-modules-volume.sh  # Drop node_modules + .next volumes, rebuild app (lightningcss / Turbopack cache)
 prisma/
   schema.prisma                      # Database schema
@@ -190,7 +199,7 @@ npm run docker:lint      # ESLint inside `app` (stack must be up)
 npm run docker:typecheck # TypeScript check inside `app`
 npm run docker:build     # Production build inside `app`
 docker compose exec app npx prisma studio   # DB GUI (inside container; same DB as the app)
-docker compose exec app npx prisma migrate dev   # Migrations inside container (recommended for agents)
+docker compose exec app npx prisma db push        # Sync schema to DB (no migration files)
 ```
 
 **Host-only** (optional; not the default for agents): `npm run dev`, `npm run build`, `npm run lint`, `npx prisma …` on the host with `DATABASE_URL` pointing at **localhost:5433** when Postgres is from Compose — can work for humans, but optional native deps (e.g. Vitest) may not match Docker.
@@ -207,7 +216,7 @@ npm run docker:test:all    # Unit then E2E in container
 
 **Host scripts** (`npm test`, `npm run test:e2e` on :3005, etc.) are for **CI** (Linux + clean `npm ci`) or explicit local use — **not** for automation against this repo’s Docker workflow.
 
-**E2E:** Prefer **`npm run docker:test:e2e`**. The host script `test:e2e` uses [start-server-and-test](https://github.com/bahmutov/start-server-and-test) to boot `next dev` on **127.0.0.1:3005** — conflicts with Docker’s `next dev` on :3000. **`docker:test:e2e`** runs `test:e2e:only` inside `app` with `TEST_BASE_URL=http://127.0.0.1:3000`. Apply migrations so the schema matches the Prisma client.
+**E2E:** Prefer **`npm run docker:test:e2e`**. The host script `test:e2e` uses [start-server-and-test](https://github.com/bahmutov/start-server-and-test) to boot `next dev` on **127.0.0.1:3005** — conflicts with Docker’s `next dev` on :3000. **`docker:test:e2e`** runs `test:e2e:only` inside `app` with `TEST_BASE_URL=http://127.0.0.1:3000`. Run `prisma db push` so the schema matches the Prisma client.
 
 **Door-game repair (stuck “waiting for others” after a bad AI skip):** with `DATABASE_URL` set (e.g. `localhost:5433` to Compose Postgres), run `npm run repair:door-session -- --galaxy "Your Galaxy" --dry-run` to list empires where `turnOpen` is still true but the last `TurnLog` action is `end_turn`; then `--apply` to run `closeFullTurn` for each. Or `--apply --player "Commander Name"` with optional `--force` if you must close an open turn manually.
 

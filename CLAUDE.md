@@ -25,7 +25,7 @@ With the stack up (`npm run docker:up` or `docker compose up -d`), run **from th
 | ESLint | `npm run docker:lint` |
 | TypeScript | `npm run docker:typecheck` |
 | Production build | `npm run docker:build` |
-| Prisma | `docker compose exec app npx prisma migrate deploy` (or `migrate dev`, `generate`, `studio`) |
+| Prisma | `docker compose exec app npx prisma db push` (or `generate`, `studio`) |
 | Seed / repair / sim | `docker compose exec app npm run seed:system-settings` — same pattern for `repair:door-session`, `sim:quick`, etc. |
 
 Equivalent: `docker compose exec app npm run lint` (etc.) if you prefer not to use the `docker:*` wrappers.
@@ -80,7 +80,7 @@ If a command fails on the host, **do not** treat that as the project failing unt
 
 **Agents (Claude Code, Cursor, etc.):** do **not** launch `next dev`, `npm run dev`, or `npm start` on the host unless the user **explicitly** asks for a host-only run. Starting the dev server outside Docker conflicts with the intended setup and can bind port 3000 while pointing at the wrong `DATABASE_URL`.
 
-**Agents:** use **`docker compose exec app npx prisma …`** for migrations and generate so the client matches the container. Humans may use the host Prisma CLI with **`DATABASE_URL`** → **`localhost:5433`** (see README); agents should still prefer `exec` for consistency.
+**Agents:** use **`docker compose exec app npx prisma …`** for `db push` and `generate` so the client matches the container. Humans may use the host Prisma CLI with **`DATABASE_URL`** → **`localhost:5433`** (see README); agents should still prefer `exec` for consistency. No migration files — use `prisma db push` to sync `schema.prisma` directly to the DB.
 
 ## Commands
 
@@ -103,7 +103,7 @@ npm run lint         # Host-only — NOT for agent verification; use `docker:lin
 npm run typecheck    # Host-only — NOT for agent verification; use `docker:typecheck`
 
 # Database (agents: prefix with `docker compose exec app`)
-docker compose exec app npx prisma migrate dev --name <migration_name>
+docker compose exec app npx prisma db push   # sync schema.prisma → DB (no migration files)
 docker compose exec app npx prisma studio
 docker compose exec app npx prisma generate
 docker compose exec app npm run seed:system-settings   # GEMINI_* from .env into SystemSettings
@@ -147,11 +147,11 @@ npm run docker:test:all     # Unit then E2E in container
 
 **Running tests in Docker (Compose)** — With the stack up (`docker compose up` / `npm run docker:up`), tests run **inside the `app` container** so they use the same Linux `node_modules` and DB as the dev server. The `docker:test*` npm scripts wrap `docker compose exec app …`.
 
-1. **Migrations** (against the Compose Postgres service):
+1. **Schema sync** (against the Compose Postgres service):
    ```bash
-   docker compose exec app npx prisma migrate deploy
+   docker compose exec app npx prisma db push
    ```
-2. **After `schema.prisma` or migration changes**, regenerate the client **in the container** and restart the app. The named `node_modules` volume can hold a stale `@prisma/client` until you do this; otherwise routes may return **500** until client and DB match.
+2. **After `schema.prisma` changes**, regenerate the client **in the container** and restart the app. The named `node_modules` volume can hold a stale `@prisma/client` until you do this; otherwise routes may return **500** until client and DB match.
    ```bash
    docker compose exec app npx prisma generate
    docker compose restart app
@@ -166,9 +166,9 @@ npm run docker:test:all     # Unit then E2E in container
    ```bash
    npm run docker:test:e2e
    ```
-5. **Full test pass** (migrate + generate + restart + unit + E2E):
+5. **Full test pass** (schema sync + generate + restart + unit + E2E):
    ```bash
-   docker compose exec app npx prisma migrate deploy && \
+   docker compose exec app npx prisma db push && \
    docker compose exec app npx prisma generate && \
    docker compose restart app && \
    sleep 15 && \
@@ -202,7 +202,7 @@ This is the **canonical** environment for running **Next.js** in this repo (see 
 
 - **`docker-compose.yml`** + **`Dockerfile.dev`**: PostgreSQL + `next dev` with the repo bind-mounted, `node_modules` and `.next` in named volumes, polling enabled for file watchers on macOS/Windows. The named `node_modules` volume can hide image-built deps; **`scripts/docker-entrypoint-dev.sh`** runs `npm ci` when the Linux `lightningcss-*` optional package is missing (e.g. after a host-only `npm install` polluted the volume). **`next.config.mjs`** sets **`turbopack.root`** to the config directory so Turbopack does not infer `src/app` as the project root (which breaks Tailwind/postcss/lightningcss in Docker). If dev fails with stale chunks referencing removed files, clear the cache: `docker compose run --rm --no-deps --entrypoint "" app sh -c "find /app/.next -mindepth 1 -delete"`.
 - Postgres is published on **host port 5433** (avoids clashing with a local Postgres on 5432). Inside Compose, the app uses `DATABASE_URL=...@postgres:5432/srx`.
-- **`scripts/docker-entrypoint-dev.sh`**: `prisma generate`, `migrate deploy`, then `next dev --hostname 0.0.0.0`.
+- **`scripts/docker-entrypoint-dev.sh`**: `prisma generate`, `db push`, then `next dev --hostname 0.0.0.0`.
 - Optional **`.env`** is merged via `env_file` (`required: false`) for `GEMINI_*`, admin vars, etc.; `DATABASE_URL` in compose overrides for the app container.
 
 ## Environment
@@ -290,7 +290,7 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 4. `POST /api/ai/run-all` can also be called directly to advance AI turns.
 
 ### Key lib files
-- `src/lib/game-engine.ts` — core game loop. `runAndPersistTick(playerId)` persists the turn tick; `processAction(playerId, action, params)` runs tick (if not yet processed) + action; **`runEndgameSettlementTick(playerId)`** runs one full economy tick from the post–final-action state when `turnsLeft` hits 0 (sequential: end of `processAction`; simultaneous: from `closeFullTurn`). ~30 action types supported. Player-targeting attacks (not pirates) and **covert_op** are rejected when the target still has **new-empire protection**.
+- `src/lib/game-engine.ts` — core game loop. `runAndPersistTick(playerId)` persists the turn tick; `processAction(playerId, action, params)` runs tick (if not yet processed) + action; **`runEndgameSettlementTick(playerId)`** runs one full economy tick from the post–final-action state when `turnsLeft` hits 0 (sequential: end of `processAction`; simultaneous: from `closeFullTurn`). 35 action types supported. Player-targeting attacks (not pirates) and **covert_op** are rejected when the target still has **new-empire protection**.
 - `src/lib/empire-prisma.ts` — `toEmpireUpdateData()` maps `Partial<Empire>` to `Prisma.EmpireUpdateInput` so scalar list fields (e.g. `pendingDefenderAlerts`) use `{ set: [...] }` instead of invalid raw `[]` in `prisma.empire.update`.
 - `src/lib/critical-events.ts` — regex classification for critical vs warning vs info lines in the turn summary modal.
 - `src/lib/game-constants.ts` — **all** balance values, planet config, costs, formulas, starting state, finance constants. The single source of truth for game numbers — UI labels reference these directly.
@@ -308,6 +308,7 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - `src/lib/db-context.ts` — `getDb()` for Prisma client or interactive transaction; `withCommitLock(sessionId, fn)` uses `pg_try_advisory_xact_lock`.
 - `src/lib/turn-order.ts` — strict sequential turn system. `sessionCannotHaveActiveTurn()` encodes lobby / missing timer; `getCurrentTurn(sessionId)` returns **null** when `waitingForHuman` is true or `turnStartedAt` is null (admin lobby); otherwise resolves the current player (with timeout auto-skip). `advanceTurn(sessionId)` no-ops in lobby.
 - `src/lib/admin-auth.ts` — async `verifyAdminLogin` / `verifyAdminPassword` (DB `AdminSettings` or env password), `requireAdmin`, httpOnly `admin_session` cookie (`ADMIN_SESSION_SECRET` recommended in production).
+- `src/lib/player-init.ts` — `createStarterPlanets()` and `createStarterEmpire()` — shared starter data for register, join, and AI player creation.
 - `src/lib/create-ai-players.ts` — `createAIPlayersForSession`; shared AI names/types in `ai-builtin-config.ts`.
 - `src/lib/ai-process-move.ts` — `processAiMoveOrSkip`: runs `processAction` for the AI’s chosen action; if `success: false`, runs `end_turn` with `skippedAfterInvalid` in `logMeta` (parity with human failed attempt + skip).
 - `src/lib/ai-runner.ts` — `runAISequence(sessionId)` walks through consecutive AI turns in order, stopping when a human is reached. Called by the action route after each player turn.

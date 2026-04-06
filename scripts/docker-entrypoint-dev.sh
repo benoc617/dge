@@ -16,9 +16,9 @@ if ! node -e "require('lightningcss')" 2>/dev/null; then
   exit 1
 fi
 
-echo "[srx] prisma generate + migrate deploy…"
+echo "[srx] prisma generate + db push…"
 npx prisma generate
-npx prisma migrate deploy
+npx prisma db push
 
 echo "[srx] starting Next.js dev server on 0.0.0.0:${PORT}…"
 exec npm run dev -- --hostname 0.0.0.0 --port "${PORT}"
