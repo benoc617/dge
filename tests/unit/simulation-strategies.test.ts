@@ -27,6 +27,7 @@ function emptyCtx(over: Partial<StrategyContext> = {}): StrategyContext {
     heavyCruisers: 0,
     carriers: 0,
     covertAgents: 0,
+    covertPoints: 0,
     effectiveness: 100,
     researchPoints: 0,
     unlockedTechIds: [],
@@ -126,13 +127,15 @@ describe("simulation strategies", () => {
           { type: "GOVERNMENT", count: 2 },
         ],
         totalPlanets: 12,
+        covertAgents: 5,   // already bought; prevents buy_covert_agents from firing first
+        covertPoints: 0,   // no covert points so bombing won't fire before attack
         rivals: [
-          { name: "EnemyA", netWorth: 120, isProtected: true },
-          { name: "EnemyB", netWorth: 80,  isProtected: false },
-          { name: "EnemyC", netWorth: 60,  isProtected: false },
+          { name: "EnemyA", netWorth: 120, isProtected: true,  credits: 50000 },
+          { name: "EnemyB", netWorth: 80,  isProtected: false, credits: 30000 },
+          { name: "EnemyC", netWorth: 60,  isProtected: false, credits: 20000 },
         ],
       }),
-      15,
+      20,
     );
     expect(a.action).toBe("attack_conventional");
     expect(a.params.target).toBe("EnemyC"); // weakest unprotected
@@ -148,8 +151,8 @@ describe("simulation strategies", () => {
         planets: [{ type: "ORE", count: 4 }, { type: "FOOD", count: 3 }, { type: "URBAN", count: 3 }, { type: "GOVERNMENT", count: 2 }],
         totalPlanets: 12,
         rivals: [
-          { name: "Safe1", netWorth: 50, isProtected: true },
-          { name: "Safe2", netWorth: 70, isProtected: true },
+          { name: "Safe1", netWorth: 50, isProtected: true, credits: 40000 },
+          { name: "Safe2", netWorth: 70, isProtected: true, credits: 60000 },
         ],
       }),
       15,

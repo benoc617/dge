@@ -58,12 +58,12 @@ export function phaseTurnForStrategy(totalTurns: number, turnsLeft: number): num
 async function fetchRivals(
   sessionId: string,
   ownEmpireId: string,
-): Promise<{ name: string; netWorth: number; isProtected: boolean }[]> {
+): Promise<{ name: string; netWorth: number; isProtected: boolean; credits: number }[]> {
   const players = await prisma.player.findMany({
     where: { gameSessionId: sessionId },
     include: {
       empire: {
-        select: { id: true, netWorth: true, isProtected: true, protectionTurns: true, turnsLeft: true },
+        select: { id: true, netWorth: true, isProtected: true, protectionTurns: true, turnsLeft: true, credits: true },
       },
     },
   });
@@ -73,6 +73,7 @@ async function fetchRivals(
       name: p.name,
       netWorth: p.empire!.netWorth,
       isProtected: p.empire!.isProtected && p.empire!.protectionTurns > 0,
+      credits: p.empire!.credits,
     }));
 }
 

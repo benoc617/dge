@@ -135,6 +135,7 @@ export interface StrategyContext {
   heavyCruisers: number;
   carriers: number;
   covertAgents: number;
+  covertPoints: number;
   effectiveness: number;
   researchPoints: number;
   unlockedTechIds: string[];
@@ -142,13 +143,13 @@ export interface StrategyContext {
   /** Current station production allocation (0-100). 0 means supply rates not configured yet. */
   supplyRateStation: number;
   /** Rivals in the same session; empty in orphan (no-session) mode. Unprotected rivals are valid PvP targets. */
-  rivals: { name: string; netWorth: number; isProtected: boolean }[];
+  rivals: { name: string; netWorth: number; isProtected: boolean; credits: number }[];
 }
 
 export function strategyContextFromEmpire(
   empire: EmpireForStrategySim,
   activeLoanCount: number,
-  rivals: { name: string; netWorth: number; isProtected: boolean }[] = [],
+  rivals: { name: string; netWorth: number; isProtected: boolean; credits: number }[] = [],
 ): StrategyContext {
   const army = empire.army;
   if (!army) {
@@ -182,6 +183,7 @@ export function strategyContextFromEmpire(
     heavyCruisers: army.heavyCruisers,
     carriers: army.carriers,
     covertAgents: army.covertAgents,
+    covertPoints: army.covertPoints,
     effectiveness: army.effectiveness,
     researchPoints: empire.research?.accumulatedPoints ?? 0,
     unlockedTechIds: empire.research?.unlockedTechIds ?? [],
@@ -278,6 +280,23 @@ function economyStrategy(ctx: StrategyContext, turn: number): { action: ActionTy
   if (countType(ctx, "FOOD") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
   if (countType(ctx, "EDUCATION") < 2 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "EDUCATION" } };
   if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
+
+  // Buy a small covert cadre to run hostage operations against wealthy rivals
+  const govPlanets = countType(ctx, "GOVERNMENT");
+  if (govPlanets >= 1 && ctx.covertAgents < 3 && ctx.credits >= 6000) {
+    return { action: "buy_covert_agents", params: { amount: 3 } };
+  }
+
+  // Take hostages from richest unprotected rival (op 6 = steals 10% of their credits)
+  if (turn >= 16 && ctx.covertAgents > 0 && ctx.covertPoints >= 1) {
+    const richTarget = ctx.rivals
+      .filter((r) => !r.isProtected)
+      .sort((a, b) => b.credits - a.credits)[0];
+    if (richTarget) {
+      return { action: "covert_op", params: { target: richTarget.name, opType: 6 } };
+    }
+  }
+
   if (ctx.lightCruisers < 15 && ctx.credits >= 9500 && turn > 40) return { action: "buy_light_cruisers", params: { amount: 10 } };
   if (turn > 70 && ctx.soldiers > 100) return { action: "attack_pirates", params: {} };
   return { action: "end_turn", params: {} };
@@ -297,20 +316,35 @@ function militaryStrategy(ctx: StrategyContext, turn: number): { action: ActionT
 
   // Military buildup (continuous)
   if (ctx.generals < 6 && ctx.credits >= 3120) return { action: "buy_generals", params: { amount: 4 } };
+
+  // Buy covert agents early for espionage softening (gov planets cap the total; buy a small cadre)
+  const govPlanets = countType(ctx, "GOVERNMENT");
+  if (govPlanets >= 1 && ctx.covertAgents < 5 && ctx.credits >= 10000) {
+    return { action: "buy_covert_agents", params: { amount: 5 } };
+  }
+
   if (ctx.soldiers < 500 && ctx.credits >= 8400) return { action: "buy_soldiers", params: { amount: 30 } };
   if (ctx.fighters < 80 && ctx.credits >= 7600) return { action: "buy_fighters", params: { amount: 20 } };
   if (ctx.lightCruisers < 30 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
   if (ctx.heavyCruisers < 10 && ctx.credits >= 19000) return { action: "buy_heavy_cruisers", params: { amount: 10 } };
 
-  // PvP: attack weakest unprotected rival once our ground + space forces are combat-ready.
+  // PvP: after protection expires (turn 16+), attack weakest unprotected rival.
+  // While building forces, soften targets with bombing (op 4 = destroys 30% food supply).
   const pvpTarget = ctx.rivals
     .filter((r) => !r.isProtected)
     .sort((a, b) => a.netWorth - b.netWorth)[0];
-  if (pvpTarget && turn >= 10 && ctx.soldiers >= 300 && ctx.fighters >= 40) {
-    return { action: "attack_conventional", params: { target: pvpTarget.name } };
+  if (pvpTarget && turn >= 16) {
+    // Covert softening: bomb food supply while building up for conventional assault
+    if (ctx.covertAgents > 0 && ctx.covertPoints >= 1 && ctx.soldiers < 300) {
+      return { action: "covert_op", params: { target: pvpTarget.name, opType: 4 } };
+    }
+    // Conventional assault once ground + space forces are combat-ready
+    if (ctx.soldiers >= 300 && ctx.fighters >= 40) {
+      return { action: "attack_conventional", params: { target: pvpTarget.name } };
+    }
   }
 
-  // Raid pirates whenever strong enough (income + effectiveness drain on NPC)
+  // Raid pirates whenever strong enough (income + effectiveness gains)
   if (ctx.soldiers > 100 && ctx.fighters > 10) return { action: "attack_pirates", params: {} };
 
   // Continue expanding military
