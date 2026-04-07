@@ -6,7 +6,7 @@
 
 import { prisma } from "./prisma";
 import { processAction, type ActionType, type TurnReport } from "./game-engine";
-import { generatePlanetName, START, PLANET_CONFIG } from "./game-constants";
+import { generatePlanetName, START, PLANET_CONFIG, UNIT_COST } from "./game-constants";
 import { getAvailableTech } from "./research";
 import * as rng from "./rng";
 import { setSeed } from "./rng";
@@ -380,9 +380,9 @@ function turtleStrategy(ctx: StrategyContext, turn: number): { action: ActionTyp
   // Mass station purchases: spend most of credits when income can sustain the maintenance.
   // Buy in large batches — the whole point of the turtle is a massive station wall.
   if (freeIncome >= 10000 && ctx.credits >= 26000) {
-    const sustainable = Math.floor(freeIncome / 40);               // how many more we can afford to maintain
-    const affordable  = Math.floor(ctx.credits * 0.75 / 520);      // spend 75% of credits
-    const buyCount    = Math.min(sustainable, affordable, 2000);    // hard cap so one action isn't absurd
+    const sustainable = Math.floor(freeIncome / 40);                                      // how many more we can afford to maintain
+    const affordable  = Math.floor(ctx.credits * 0.75 / UNIT_COST.DEFENSE_STATION);      // spend 75% of credits
+    const buyCount    = Math.min(sustainable, affordable, 2000);                          // hard cap so one action isn't absurd
     if (buyCount >= 5) return { action: "buy_stations", params: { amount: buyCount } };
   }
 
@@ -396,8 +396,8 @@ function turtleStrategy(ctx: StrategyContext, turn: number): { action: ActionTyp
   if (ctx.fighters >= 15) return { action: "attack_pirates", params: {} };
 
   // Any leftover credits → more stations.
-  if (ctx.credits >= 5200) {
-    const buyCount = Math.max(10, Math.floor(ctx.credits * 0.7 / 520));
+  if (ctx.credits >= UNIT_COST.DEFENSE_STATION * 10) {
+    const buyCount = Math.max(10, Math.floor(ctx.credits * 0.7 / UNIT_COST.DEFENSE_STATION));
     return { action: "buy_stations", params: { amount: buyCount } };
   }
 
