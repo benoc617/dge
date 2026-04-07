@@ -199,12 +199,29 @@ export async function processTurnTick(
   army: Army,
   planets: Planet[],
   supplyRates: SupplyRates | null,
+  research: { unlockedTechIds: string[] } | null,
   opts?: ProcessTurnTickOptions,
 ): Promise<{ updatedEmpire: Partial<Empire>; updatedArmy: Partial<Army>; updatedPlanets: { id: string; shortTermProduction: number }[]; report: TurnReport }> {
   const decTurnsLeft = opts?.decrementTurnsLeft !== false;
   const endgameSettlement = opts?.endgameSettlement === true;
   const events: string[] = [];
   const pendingAlerts = empire.pendingDefenderAlerts ?? [];
+
+  // ----- Passive tech bonuses from unlocked research -----
+  const unlockedIds = research?.unlockedTechIds ?? [];
+  let planetMaintReduction = 0;  // percent reduction
+  let creditsBonus = 0;           // percent income multiplier
+  let popGrowthBonus = 0;         // percent births multiplier
+  let civilUnrestReduction = 0;   // percent reduction to civil penalty
+  for (const id of unlockedIds) {
+    const tech = getTech(id);
+    if (!tech) continue;
+    const eff = tech.effect;
+    if (eff.type === "planet_maint_reduction") planetMaintReduction += eff.percent;
+    else if (eff.type === "credits_bonus") creditsBonus += eff.percent;
+    else if (eff.type === "pop_growth_bonus") popGrowthBonus += eff.percent;
+    else if (eff.type === "civil_unrest_reduction") civilUnrestReduction += eff.percent;
+  }
   for (const msg of pendingAlerts) {
     events.push(`ALERT: ${msg}`);
   }
@@ -227,7 +244,7 @@ export async function processTurnTick(
   const orePlanets = planets.filter((p) => p.type === "ORE");
   const petroPlanets = planets.filter((p) => p.type === "PETROLEUM");
 
-  const civilPenalty = empire.civilStatus * POP.CIVIL_STATUS_FACTOR;
+  const civilPenalty = empire.civilStatus * POP.CIVIL_STATUS_FACTOR * (1 - Math.min(civilUnrestReduction, 90) / 100);
 
   let foodProduced = 0;
   for (const p of foodPlanets) {
@@ -301,13 +318,18 @@ export async function processTurnTick(
     galacticRedist = Math.floor(empire.turnsPlayed * (galacticRedist / 20));
   }
 
-  const totalIncome = populationTax + urbanTax + tourismIncome + foodSalesCredits + oreSalesCredits + petroSalesCredits + galacticRedist;
+  const totalIncome = Math.round((populationTax + urbanTax + tourismIncome + foodSalesCredits + oreSalesCredits + petroSalesCredits + galacticRedist) * (1 + creditsBonus / 100));
 
   // ----- Step 6: Calculate expenses -----
   const planetMaintPerUnit = MAINT.PLANET_BASE + empire.turnsPlayed * MAINT.PLANET_PER_TURN;
   const ohFactor = totalPlanets * (MAINT.IMPERIAL_OVERHEAD_PER_PLANET ?? 0);
   const overheadMult = 1 + ohFactor + ohFactor * ohFactor * 0.3;
-  const planetMaintBase = Math.round(Math.max(0, totalPlanets - govPlanets) * planetMaintPerUnit * overheadMult);
+  // Sum weighted maintenance across non-gov planets; planet types with maintenanceMult < 1 get a discount
+  const maintWeightSum = planets.reduce((sum, p) => {
+    if (p.type === "GOVERNMENT") return sum;
+    return sum + (PLANET_CONFIG[p.type as PlanetTypeName]?.maintenanceMult ?? 1.0);
+  }, 0);
+  const planetMaintBase = Math.round(Math.max(0, maintWeightSum) * planetMaintPerUnit * overheadMult * (1 - Math.min(planetMaintReduction, 90) / 100));
   const nonGov = Math.max(1, totalPlanets - govPlanets);
   const govReduction = Math.floor((govPlanets * 4 / nonGov) * planetMaintBase);
   const planetMaintenance = alterNumber(Math.max(0, planetMaintBase - govReduction), 5);
@@ -368,7 +390,7 @@ export async function processTurnTick(
   const bornCivilPenalty = bornBase * civilPenalty;
   const taxMult = getTaxBirthMultiplier(empire.taxRate);
   const bornTaxPenalty = bornPrime * urbanBonus * taxMult * empire.taxRate * POP.TAX_IMMIGRATION_PENALTY * 0.5;
-  let births = Math.max(0, Math.round(bornBase - bornPollutionPenalty - bornCivilPenalty - bornTaxPenalty));
+  let births = Math.max(0, Math.round((bornBase - bornPollutionPenalty - bornCivilPenalty - bornTaxPenalty) * (1 + popGrowthBonus / 100)));
   if (newFood < 0) births = Math.floor(births / 4);
   births = alterNumber(births, 5);
 
@@ -709,7 +731,7 @@ export async function runAndPersistTick(
   if (!army || empire.turnsLeft < 1) return null;
   if (empire.tickProcessed) return null;
 
-  const tick = await processTurnTick(empire, army, empire.planets, empire.supplyRates, opts);
+  const tick = await processTurnTick(empire, army, empire.planets, empire.supplyRates, empire.research ?? null, opts);
 
   await getDb().empire.update({
     where: { id: empire.id },
@@ -737,11 +759,16 @@ async function applyPostActionEconomyFinance(
   empireId: string,
   tick: { updatedEmpire: Partial<Empire>; report: TurnReport },
   planets: Planet[],
-  research: { id: string } | null,
+  research: { id: string; unlockedTechIds: string[] } | null,
 ): Promise<void> {
   const researchPlanetCount = planets.filter((p) => p.type === "RESEARCH").length;
   if (researchPlanetCount > 0 && research) {
-    const rpProduced = researchPlanetCount * PLANET_CONFIG.RESEARCH.baseProduction;
+    let researchSpeedMult = 1.0;
+    for (const id of research.unlockedTechIds) {
+      const tech = getTech(id);
+      if (tech?.effect.type === "research_speed") researchSpeedMult += tech.effect.percent / 100;
+    }
+    const rpProduced = Math.round(researchPlanetCount * PLANET_CONFIG.RESEARCH.baseProduction * researchSpeedMult);
     await getDb().research.update({
       where: { id: research.id },
       data: { accumulatedPoints: { increment: rpProduced } },
@@ -810,7 +837,7 @@ export async function runEndgameSettlementTick(playerId: string): Promise<TurnRe
   if (!army) return null;
   if (empire.turnsLeft !== 0) return null;
 
-  const tick = await processTurnTick(empire, army, empire.planets, empire.supplyRates, {
+  const tick = await processTurnTick(empire, army, empire.planets, empire.supplyRates, empire.research ?? null, {
     decrementTurnsLeft: false,
     endgameSettlement: true,
   });
@@ -882,7 +909,7 @@ export async function processAction(
   let tick: { updatedEmpire: Partial<Empire>; updatedArmy: Partial<Army>; updatedPlanets: { id: string; shortTermProduction: number }[]; report: TurnReport };
 
   if (!empire.tickProcessed) {
-    tick = await processTurnTick(empire, army, planets, supplyRates, options?.tickOptions);
+    tick = await processTurnTick(empire, army, planets, supplyRates, player.empire.research ?? null, options?.tickOptions);
     tickReport = tick.report;
   } else {
     // Tick already persisted — seed with current DB values so action cases

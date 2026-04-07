@@ -9,7 +9,7 @@ export type PlanetTypeName = (typeof PLANET_TYPES)[number];
 
 export const PLANET_CONFIG: Record<
   PlanetTypeName,
-  { label: string; baseCost: number; baseProduction: number; desc: string }
+  { label: string; baseCost: number; baseProduction: number; desc: string; maintenanceMult?: number }
 > = {
   FOOD:           { label: "Food",           baseCost: 14000, baseProduction: 200, desc: "Feeds population and soldiers" },
   ORE:            { label: "Ore",            baseCost: 10000, baseProduction: 125, desc: "Steady ore; feeds mechanical units" },
@@ -19,7 +19,7 @@ export const PLANET_CONFIG: Record<
   EDUCATION:      { label: "Education",      baseCost: 14000, baseProduction: 100, desc: "Linear immigration growth" },
   GOVERNMENT:     { label: "Government",     baseCost: 12000, baseProduction: 100, desc: "Reduces maintenance; houses agents" },
   SUPPLY:         { label: "Supply",         baseCost: 20000, baseProduction: 100, desc: "Auto-produces military units" },
-  RESEARCH:       { label: "Research",       baseCost: 20000, baseProduction: 500, desc: "Generates research points" },
+  RESEARCH:       { label: "Research",       baseCost: 20000, baseProduction: 750, desc: "Generates research points", maintenanceMult: 0.5 },
   ANTI_POLLUTION: { label: "Anti-Pollution", baseCost: 18000, baseProduction: 100, desc: "Absorbs pollution from petroleum" },
 };
 
@@ -30,7 +30,7 @@ export const POP = {
   BIRTH_RATE: 0.03,
   DEATH_RATE: 0.008,
   URBAN_GROWTH_FACTOR: 0.45,
-  EDUCATION_IMMIGRATION: 400,
+  EDUCATION_IMMIGRATION: 700,
   OVERCROWD_CAPACITY_PER_URBAN: 20000,
   OVERCROWD_EMIGRATION_RATE: 0.10,
   POLLUTION_POP_FACTOR: 0.000002,

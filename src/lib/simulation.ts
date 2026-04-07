@@ -421,9 +421,10 @@ function randomStrategy(ctx: StrategyContext): { action: ActionType; params: Rec
 }
 
 function researchStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
-  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 50, petroleumSellRate: 50 } };
-  if (turn === 1 && ctx.taxRate > 20) return { action: "set_tax_rate", params: { rate: 20 } };
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 55, petroleumSellRate: 55 } };
+  if (turn === 1 && ctx.taxRate > 22) return { action: "set_tax_rate", params: { rate: 22 } };
 
+  // Spend research points as soon as affordable — pick cheapest unlocked tech first
   const available = getAvailableTech(ctx.unlockedTechIds);
   const affordable = available
     .filter((t) => ctx.researchPoints >= t.cost)
@@ -432,25 +433,33 @@ function researchStrategy(ctx: StrategyContext, turn: number): { action: ActionT
     return { action: "discover_tech", params: { techId: affordable[0].id } };
   }
 
-  if (countType(ctx, "URBAN") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
-  if (countType(ctx, "FOOD") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
+  // Economy foundation: food first (must match pop growth), then ore/tourism/urban/government
+  if (countType(ctx, "FOOD") < 5 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
   if (countType(ctx, "ORE") < 4 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
+  if (countType(ctx, "URBAN") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
   if (countType(ctx, "TOURISM") < 2 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
   if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
+  // Petroleum: 1 planet covers all fuel needs for fighters + light cruisers
+  if (countType(ctx, "PETROLEUM") < 1 && ctx.credits >= 20000) return { action: "buy_planet", params: { type: "PETROLEUM" } };
 
-  if (ctx.soldiers < 400 && ctx.credits >= 14000) return { action: "buy_soldiers", params: { amount: 40 } };
-  if (ctx.fighters < 30 && ctx.credits >= 3800) return { action: "buy_fighters", params: { amount: 10 } };
-  if (ctx.soldiers > 80 && ctx.fighters > 8) return { action: "attack_pirates", params: {} };
+  // Minimum military for pirate raids; start raiding at turn 25
+  if (ctx.soldiers < 200 && ctx.credits >= 5600) return { action: "buy_soldiers", params: { amount: 20 } };
+  if (ctx.fighters < 20 && ctx.credits >= 3800) return { action: "buy_fighters", params: { amount: 10 } };
+  if (turn > 25 && ctx.soldiers > 80 && ctx.fighters > 8) return { action: "attack_pirates", params: {} };
 
-  if (
-    countType(ctx, "RESEARCH") < 10 &&
-    ctx.credits >= Math.max(55000, PLANET_CONFIG.RESEARCH.baseCost * 2) &&
-    ctx.civilStatus <= 3
-  ) {
+  // Research labs: buy up to 6 once economy foundation is solid (50K threshold ensures income backing).
+  // Each lab costs ~1,600 cr/turn maintenance; 6 labs = ~9,600/turn — sustainable on 50K+ income.
+  if (countType(ctx, "RESEARCH") < 6 && ctx.credits >= 50000 && ctx.civilStatus <= 3) {
     return { action: "buy_planet", params: { type: "RESEARCH" } };
   }
 
-  if (ctx.lightCruisers < 15 && ctx.credits >= 9500 && turn > 40) return { action: "buy_light_cruisers", params: { amount: 10 } };
+  // Late game: convert accumulated credits into NW — military and more economy planets
+  if (turn > 60) {
+    if (ctx.soldiers < 600 && ctx.credits >= 11200) return { action: "buy_soldiers", params: { amount: 40 } };
+    if (ctx.fighters < 50 && ctx.credits >= 7600) return { action: "buy_fighters", params: { amount: 20 } };
+    if (ctx.lightCruisers < 20 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
+  }
+
   return { action: "end_turn", params: {} };
 }
 
@@ -472,17 +481,35 @@ function creditLeverageStrategy(ctx: StrategyContext, turn: number): { action: A
 }
 
 function growthFocusStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
-  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 45, petroleumSellRate: 45 } };
-  if (turn === 1 && ctx.taxRate > 15) return { action: "set_tax_rate", params: { rate: 15 } };
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 55, petroleumSellRate: 55 } };
+  if (turn === 1 && ctx.taxRate > 18) return { action: "set_tax_rate", params: { rate: 18 } };
 
-  if (countType(ctx, "FOOD") < 6 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
-  if (countType(ctx, "URBAN") < 6 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+  // Core growth planets — food + urban + education for exponential pop
+  if (countType(ctx, "FOOD") < 5 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
+  if (countType(ctx, "URBAN") < 5 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
   if (countType(ctx, "EDUCATION") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "EDUCATION" } };
-  if (countType(ctx, "ORE") < 3 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
-  if (countType(ctx, "TOURISM") < 2 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
 
-  if (turn > 55 && ctx.soldiers > 80 && ctx.fighters > 8) return { action: "attack_pirates", params: {} };
-  if (turn > 45 && ctx.lightCruisers < 12 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 5 } };
+  // Income backbone: ORE + TOURISM to sustain expanding maintenance costs
+  if (countType(ctx, "ORE") < 3 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
+  if (countType(ctx, "TOURISM") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
+
+  // Government: reduces imperial overhead and unlocks covert agents
+  if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
+
+  // Minimum military for pirate raids; start raiding at turn 25 for income supplement
+  if (ctx.soldiers < 100 && ctx.credits >= 5600) return { action: "buy_soldiers", params: { amount: 20 } };
+  if (ctx.fighters < 15 && ctx.credits >= 1900) return { action: "buy_fighters", params: { amount: 5 } };
+  if (turn > 25 && ctx.soldiers > 80 && ctx.fighters > 8) return { action: "attack_pirates", params: {} };
+
+  // Continue scaling all income and growth vectors
+  if (countType(ctx, "FOOD") < 8 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
+  if (countType(ctx, "URBAN") < 8 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+  if (countType(ctx, "TOURISM") < 6 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
+  if (countType(ctx, "EDUCATION") < 5 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "EDUCATION" } };
+
+  // Light cruisers for better pirate yield from turn 35
+  if (turn > 35 && ctx.lightCruisers < 15 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 5 } };
+
   return { action: "end_turn", params: {} };
 }
 
