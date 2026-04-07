@@ -15,6 +15,7 @@ import {
 import { formatUnitLosses, formatUnitLossesOrNone } from "./combat-loss-format";
 import { defenderCovertAlertMessage, executeCovertOp } from "./espionage";
 import { getAvailableTech, getTech, TECH_TREE, RANDOM_EVENTS, type TechEffect } from "./research";
+import { targetHasNewEmpireProtection } from "./empire-protection";
 
 async function emitGameEvent(
   player: { gameSessionId: string | null | undefined },
@@ -38,9 +39,7 @@ async function pushDefenderAlert(defenderEmpireId: string, message: string) {
   });
 }
 
-function targetHasNewEmpireProtection(empire: { isProtected: boolean; protectionTurns: number }): boolean {
-  return empire.isProtected && empire.protectionTurns > 0;
-}
+export { targetHasNewEmpireProtection } from "./empire-protection";
 
 function protectionBlockMessage(turns: number): string {
   return `Target is under new-empire protection (${turns} turn${turns === 1 ? "" : "s"} remaining).`;

@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { PLANET_CONFIG, UNIT_COST } from "@/lib/game-constants";
+import { targetHasNewEmpireProtection } from "@/lib/empire-protection";
 import * as rng from "@/lib/rng";
 
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
@@ -12,6 +13,12 @@ const MAX_GEMINI_TIMEOUT_MS = 300_000;
  * Milliseconds for each Gemini API call (`generateContent` request timeout).
  * Override with `GEMINI_TIMEOUT_MS` (min 1000, max 300000; invalid values → default 60000).
  */
+/** When `1` or `true`, logs JSON lines to stdout for `getAIMove` and (from ai-runner) full AI turn timing. */
+export function shouldLogAiTiming(): boolean {
+  const v = process.env.SRX_LOG_AI_TIMING;
+  return v === "1" || v === "true";
+}
+
 export function getGeminiRequestTimeoutMs(): number {
   const raw = process.env.GEMINI_TIMEOUT_MS;
   if (raw === undefined || raw === "") return DEFAULT_GEMINI_TIMEOUT_MS;
@@ -117,6 +124,18 @@ export function pickRivalOpponent(rivalNames: string[]): string {
   return rivalNames[rng.randomInt(0, rivalNames.length - 1)]!;
 }
 
+/** Rivals that may be targeted by attacks/covert (excludes new-empire protection). */
+export function computeRivalAttackTargets(
+  rivals: {
+    name: string;
+    empire: { isProtected: boolean; protectionTurns: number } | null | undefined;
+  }[],
+): string[] {
+  return rivals
+    .filter((r) => r.empire != null && !targetHasNewEmpireProtection(r.empire))
+    .map((r) => r.name);
+}
+
 const VALID_ACTIONS = new Set([
   "buy_planet",
   "set_tax_rate",
@@ -160,6 +179,11 @@ export type AIMoveContext = {
   commanderName: string;
   /** Other players in the same session (human + AI), excluding self. */
   rivalNames: string[];
+  /**
+   * Subset of `rivalNames` whose empires are not under new-empire protection — the only valid
+   * `target` for attack_* and covert_op. Empty when every rival is protected or there are no rivals.
+   */
+  rivalAttackTargets: string[];
 };
 
 export type AIMoveResult = {
@@ -180,27 +204,52 @@ function sanitizeAIMove(
   const action = typeof move.action === "string" && VALID_ACTIONS.has(move.action) ? move.action : "end_turn";
   const commanderName = ctx.commanderName;
   const rivalNames = ctx.rivalNames.filter((n) => n !== commanderName);
+  const rivalAttackTargets = (ctx.rivalAttackTargets ?? []).filter(
+    (n) => n !== commanderName && rivalNames.includes(n),
+  );
+
+  const HOSTILE_TARGET_ACTIONS = new Set([
+    "attack_conventional",
+    "attack_guerrilla",
+    "attack_nuclear",
+    "attack_chemical",
+    "attack_psionic",
+    "covert_op",
+  ]);
 
   let target = typeof move.target === "string" ? move.target : undefined;
   const needsTarget =
-    action === "attack_conventional" ||
-    action === "attack_guerrilla" ||
-    action === "attack_nuclear" ||
-    action === "attack_chemical" ||
-    action === "attack_psionic" ||
-    action === "covert_op" ||
+    HOSTILE_TARGET_ACTIONS.has(action) ||
     action === "propose_treaty";
 
   if (needsTarget) {
-    if (rivalNames.length === 0) {
-      return {
-        action: "end_turn",
-        reasoning: typeof move.reasoning === "string" ? move.reasoning : "No rivals in session",
-        llmSource,
-      };
-    }
-    if (!target || !rivalNames.includes(target) || target === commanderName) {
-      target = pickRivalOpponent(rivalNames);
+    if (HOSTILE_TARGET_ACTIONS.has(action)) {
+      if (rivalAttackTargets.length === 0) {
+        return {
+          action: "end_turn",
+          reasoning:
+            rivalNames.length === 0
+              ? typeof move.reasoning === "string"
+                ? move.reasoning
+                : "No rivals in session"
+              : "No attackable rivals (all under new-empire protection)",
+          llmSource,
+        };
+      }
+      if (!target || !rivalAttackTargets.includes(target) || target === commanderName) {
+        target = pickRivalOpponent(rivalAttackTargets);
+      }
+    } else if (action === "propose_treaty") {
+      if (rivalNames.length === 0) {
+        return {
+          action: "end_turn",
+          reasoning: typeof move.reasoning === "string" ? move.reasoning : "No rivals in session",
+          llmSource,
+        };
+      }
+      if (!target || !rivalNames.includes(target) || target === commanderName) {
+        target = pickRivalOpponent(rivalNames);
+      }
     }
   }
 
@@ -216,12 +265,24 @@ function sanitizeAIMove(
   return out;
 }
 
+function logGetAIMoveTiming(payload: {
+  totalMs: number;
+  configMs: number;
+  generateMs: number;
+  source: "gemini" | "fallback";
+  reason?: string;
+}) {
+  if (!shouldLogAiTiming()) return;
+  console.info("[srx-ai]", JSON.stringify({ event: "getAIMove", ...payload }));
+}
+
 export async function getAIMove(
   persona: string,
   empireState: unknown,
   gameEvents: string[],
   ctx: AIMoveContext,
 ): Promise<AIMoveResult> {
+  const tStart = performance.now();
   const state = empireState as EmpireState;
 
   const planetSummary: Record<string, number> = {};
@@ -231,12 +292,24 @@ export async function getAIMove(
     }
   }
 
+  const attackable =
+    ctx.rivalAttackTargets?.filter((n) => ctx.rivalNames.includes(n)) ?? [];
+  const protectedRivals = ctx.rivalNames.filter((n) => !attackable.includes(n));
+
   const rivalBlock =
     ctx.rivalNames.length > 0
-      ? `RIVAL COMMANDERS (your \`target\` for attacks/covert/treaty must be EXACTLY one of these names, never yourself):
+      ? `RIVAL COMMANDERS:
 ${ctx.rivalNames.map((n) => `- ${n}`).join("\n")}
+ATTACK / COVERT \`target\` — use ONLY these names (not under new-empire protection):
+${attackable.length > 0 ? attackable.map((n) => `- ${n}`).join("\n") : "- (none — do NOT use attack_* or covert_op vs players; use attack_pirates, economy, or end_turn)"}
+${
+  protectedRivals.length > 0
+    ? `PROTECTED (cannot attack or covert yet):\n${protectedRivals.map((n) => `- ${n}`).join("\n")}`
+    : ""
+}
+TREATY \`target\` — any name from RIVAL COMMANDERS above.
 YOUR NAME (never use as target): ${ctx.commanderName}`
-    : `NO OTHER EMPIRES IN SESSION — use economy/military buildup or end_turn only (no attack/covert targets).`;
+      : `NO OTHER EMPIRES IN SESSION — use economy/military buildup or end_turn only (no attack/covert targets).`;
 
   const prompt = `You are an AI commander in Solar Realms Extreme, a turn-based galactic strategy game.
 
@@ -274,7 +347,7 @@ COST REFERENCE: Soldier=280cr, General=780cr, Fighter=380cr, Station=520cr, Ligh
 PLANET COSTS (base, before netWorth inflation): Food=14000, Ore=10000, Tourism=14000, Petroleum=20000, Urban=14000, Education=14000, Gov=12000, Supply=20000, Research=25000, AntiPollution=18000
 
 CRITICAL RULES:
-- \`target\` must be one of the RIVAL COMMANDERS listed above — NEVER "${ctx.commanderName}" (yourself).
+- For attack_* and covert_op, \`target\` must be from ATTACK / COVERT list only — NEVER a PROTECTED rival or "${ctx.commanderName}" (yourself).
 - Each action costs 1 turn. Choose the SINGLE BEST action for this turn.
 - If food is low, buy food planets or buy food from market.
 - If population is high relative to urban planets (1 urban = 20k capacity), buy urban planets.
@@ -292,25 +365,61 @@ Respond ONLY with valid JSON:
     return sanitizeAIMove(raw as Record<string, unknown>, ctx, "fallback");
   };
 
+  const tConfig0 = performance.now();
   const geminiCfg = await resolveGeminiConfig();
+  const configMs = performance.now() - tConfig0;
+
   if (!geminiCfg.apiKey || geminiCfg.apiKey.startsWith("your-")) {
-    return runFallback();
+    const out = runFallback();
+    logGetAIMoveTiming({
+      totalMs: performance.now() - tStart,
+      configMs,
+      generateMs: 0,
+      source: "fallback",
+      reason: "no_api_key",
+    });
+    return out;
   }
 
   try {
     const model = new GoogleGenerativeAI(geminiCfg.apiKey).getGenerativeModel({ model: geminiCfg.model });
+    const tGen0 = performance.now();
     const result = await model.generateContent(prompt, {
       timeout: getGeminiRequestTimeoutMs(),
     });
+    const generateMs = performance.now() - tGen0;
     const text = result.response.text().trim();
     const json = text.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
     const parsed = JSON.parse(json) as Record<string, unknown>;
     if (typeof parsed.action !== "string" || !VALID_ACTIONS.has(parsed.action)) {
-      return runFallback();
+      const out = runFallback();
+      logGetAIMoveTiming({
+        totalMs: performance.now() - tStart,
+        configMs,
+        generateMs,
+        source: "fallback",
+        reason: "invalid_action",
+      });
+      return out;
     }
-    return sanitizeAIMove(parsed, ctx, "gemini");
+    const out = sanitizeAIMove(parsed, ctx, "gemini");
+    logGetAIMoveTiming({
+      totalMs: performance.now() - tStart,
+      configMs,
+      generateMs,
+      source: "gemini",
+    });
+    return out;
   } catch {
-    return runFallback();
+    const out = runFallback();
+    logGetAIMoveTiming({
+      totalMs: performance.now() - tStart,
+      configMs,
+      generateMs: 0,
+      source: "fallback",
+      reason: "api_or_parse_error",
+    });
+    return out;
   }
 }
 
@@ -328,6 +437,7 @@ function localFallback(
   const turnsPlayed = s?.turnsPlayed ?? 0;
 
   const rivalNames = ctx.rivalNames.filter((n) => n !== ctx.commanderName);
+  const rivalAttackTargets = (ctx.rivalAttackTargets ?? []).filter((n) => n !== ctx.commanderName);
 
   const PC = PLANET_CONFIG;
   const UC = UNIT_COST;
@@ -357,19 +467,19 @@ function localFallback(
     return { action: "market_buy", resource: "food", amount: 100, reasoning: "Emergency food buy" };
   }
 
-  // Early aggression (Warlord / Spy) when rivals exist
-  if (rivalNames.length > 0 && !s.isProtected && army) {
+  // Early aggression (Warlord / Spy) when attackable rivals exist
+  if (rivalAttackTargets.length > 0 && !s.isProtected && army) {
     if (isWarlord && turnsPlayed >= 6 && (army.generals ?? 0) >= 1 && rng.random() < 0.2) {
       return {
         action: "attack_conventional",
-        target: pickRivalOpponent(rivalNames),
+        target: pickRivalOpponent(rivalAttackTargets),
         reasoning: "Press rival empires",
       };
     }
     if (isSpy && turnsPlayed >= 8 && (army.covertAgents ?? 0) >= 1 && rng.random() < 0.25) {
       return {
         action: "covert_op",
-        target: pickRivalOpponent(rivalNames),
+        target: pickRivalOpponent(rivalAttackTargets),
         opType: rng.random() < 0.5 ? 0 : 1,
         reasoning: "Covert ops vs rival",
       };
@@ -397,18 +507,18 @@ function localFallback(
   }
 
   if (isWarlord) {
-    if (rivalNames.length > 0 && !s.isProtected && army && (army.generals ?? 0) >= 1) {
+    if (rivalAttackTargets.length > 0 && !s.isProtected && army && (army.generals ?? 0) >= 1) {
       if (rng.random() < 0.38) {
         return {
           action: "attack_conventional",
-          target: pickRivalOpponent(rivalNames),
+          target: pickRivalOpponent(rivalAttackTargets),
           reasoning: "Conventional invasion",
         };
       }
       if (rng.random() < 0.14) {
         return {
           action: "attack_guerrilla",
-          target: pickRivalOpponent(rivalNames),
+          target: pickRivalOpponent(rivalAttackTargets),
           reasoning: "Guerrilla harassment",
         };
       }
@@ -437,18 +547,18 @@ function localFallback(
   }
 
   if (isSpy) {
-    if (rivalNames.length > 0 && army && (army.covertAgents ?? 0) >= 1 && rng.random() < 0.32) {
+    if (rivalAttackTargets.length > 0 && army && (army.covertAgents ?? 0) >= 1 && rng.random() < 0.32) {
       return {
         action: "covert_op",
-        target: pickRivalOpponent(rivalNames),
+        target: pickRivalOpponent(rivalAttackTargets),
         opType: rng.randomInt(0, 4),
         reasoning: "Sustained covert pressure",
       };
     }
-    if (rivalNames.length > 0 && !s.isProtected && army && (army.generals ?? 0) >= 1 && (army.soldiers ?? 0) >= 120 && rng.random() < 0.2) {
+    if (rivalAttackTargets.length > 0 && !s.isProtected && army && (army.generals ?? 0) >= 1 && (army.soldiers ?? 0) >= 120 && rng.random() < 0.2) {
       return {
         action: "attack_conventional",
-        target: pickRivalOpponent(rivalNames),
+        target: pickRivalOpponent(rivalAttackTargets),
         reasoning: "Strike after intelligence",
       };
     }

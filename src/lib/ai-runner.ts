@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { getAIMove, AI_PERSONAS, type AIMoveContext } from "@/lib/gemini";
+import { getAIMove, AI_PERSONAS, computeRivalAttackTargets, type AIMoveContext } from "@/lib/gemini";
 import { processAction, runAndPersistTick, type ActionType } from "@/lib/game-engine";
 import { processAiMoveOrSkip } from "@/lib/ai-process-move";
 import { getCurrentTurn, advanceTurn } from "@/lib/turn-order";
@@ -38,13 +38,14 @@ async function buildAIMoveContext(player: {
   const rivals = gameSessionId
     ? await prisma.player.findMany({
         where: { gameSessionId, id: { not: player.id } },
-        select: { name: true, isAI: true },
+        select: { name: true, isAI: true, empire: { select: { isProtected: true, protectionTurns: true } } },
       })
     : [];
 
   const ctx: AIMoveContext = {
     commanderName: player.name,
     rivalNames: rivals.map((r) => r.name),
+    rivalAttackTargets: computeRivalAttackTargets(rivals),
   };
 
   const recentEvents = gameSessionId
