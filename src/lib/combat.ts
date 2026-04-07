@@ -427,12 +427,11 @@ export function runPirateRaid(army: ArmySnapshot, turnsPlayed: number = 0): Pira
   const attackerLosses: Record<string, number> = {};
 
   if (victory) {
-    // Loot scales with army strength — bigger fleets find richer pirate nests
-    const strengthBonus = Math.sqrt(playerStrength);
-    const baseLoot = 3000 + strengthBonus * 80 + turnsPlayed * 50;
+    // Loot scales linearly with army strength — bigger fleets find richer pirate nests
+    const baseLoot = 3000 + playerStrength * 15 + turnsPlayed * 40;
     const lootCredits = alterNumber(Math.round(baseLoot), 25);
-    const lootOre = alterNumber(Math.round(100 + strengthBonus * 5), 25);
-    const lootFood = alterNumber(Math.round(50 + strengthBonus * 3), 25);
+    const lootOre = alterNumber(Math.round(100 + playerStrength * 0.8), 25);
+    const lootFood = alterNumber(Math.round(50 + playerStrength * 0.5), 25);
     messages.push(`Pirate nest destroyed! Recovered ${lootCredits.toLocaleString()} credits, ${lootOre} ore, ${lootFood} food.`);
     const dominance = playerStrength / pirateStrength;
     const casualtyRate = Math.max(0.005, 0.04 / dominance);

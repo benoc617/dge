@@ -303,19 +303,31 @@ function militaryStrategy(ctx: StrategyContext, turn: number): { action: ActionT
 }
 
 function turtleStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
-  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 50, petroleumSellRate: 50 } };
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 60, petroleumSellRate: 60 } };
 
   // Lower tax for pop growth, build defense and resources
   if (turn === 1 && ctx.taxRate > 20) return { action: "set_tax_rate", params: { rate: 20 } };
+
+  // Economy base — tourism for income, urban for pop
   if (countType(ctx, "URBAN") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
-  if (countType(ctx, "ORE") < 4 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
   if (countType(ctx, "FOOD") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
-  if (ctx.defenseStations < 15 && ctx.credits >= 5200) return { action: "buy_stations", params: { amount: 10 } };
+  if (countType(ctx, "TOURISM") < 2 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
+  if (countType(ctx, "ORE") < 3 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
+
+  // Build defensive military core early
+  if (ctx.defenseStations < 20 && ctx.credits >= 5200) return { action: "buy_stations", params: { amount: 10 } };
   if (ctx.fighters < 30 && ctx.credits >= 3800) return { action: "buy_fighters", params: { amount: 10 } };
   if (ctx.lightCruisers < 20 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
+
+  // Raid pirates with defensive fleet — generates income without aggression vs players
+  if (ctx.fighters >= 15 && ctx.lightCruisers >= 10) return { action: "attack_pirates", params: {} };
+
+  // Continue building economy and defense
   if (countType(ctx, "EDUCATION") < 2 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "EDUCATION" } };
-  if (ctx.defenseStations < 30 && ctx.credits >= 5200) return { action: "buy_stations", params: { amount: 10 } };
+  if (countType(ctx, "TOURISM") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
+  if (ctx.defenseStations < 40 && ctx.credits >= 5200) return { action: "buy_stations", params: { amount: 10 } };
   if (ctx.lightCruisers < 40 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
+  if (countType(ctx, "URBAN") < 6 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
   return { action: "end_turn", params: {} };
 }
 

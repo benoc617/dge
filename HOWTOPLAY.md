@@ -79,7 +79,7 @@ The galaxy creator can manage game settings from the **CFG tab** in the Command 
 
 ## Your First Turns
 
-You start with 10,000 credits, 25,000 population, 7 planets (2 Food, 2 Ore, 2 Urban, 1 Government), 100 soldiers, 2 generals, 10 fighters, and 20 turns of attack protection.
+You start with 10,000 credits, 25,000 population, 7 planets (2 Food, 2 Ore, 2 Urban, 1 Government), 100 soldiers, 2 generals, 10 fighters, and 15 turns of attack protection.
 
 **Recommended opening moves:**
 
@@ -99,14 +99,14 @@ The header bar at the top of the game screen always shows:
 - **Turn timer** — countdown clock for the current turn (24h default). Turns red under 1 hour.
 - **Credits** — your current balance in yellow
 - **Turn counter** — e.g., `T5 (95 left)` showing your turn number and how many remain
-- **Protection** — `[P20]` if you still have protection turns remaining
+- **Protection** — `[P15]` if you still have protection turns remaining
 - **Commander name**
 
 ---
 
 ## The Galactic Powers Panel
 
-At the top of the game screen, the **Galactic Powers** leaderboard shows all players ranked by net worth with column headers: **Rank, Commander, Prt** (on wider screens), **Worth, Pop, Planets, Turns, Military**. **Turns** counts economy ticks completed (`turnsPlayed`) for that empire. **Prt** shows `[PN]` when that commander still has **new-empire protection** (same idea as your own `[P20]` badge in the header). You cannot **attack** or run **covert ops** against a protected rival until their protection turns expire.
+At the top of the game screen, the **Galactic Powers** leaderboard shows all players ranked by net worth with column headers: **Rank, Commander, Prt** (on wider screens), **Worth, Pop, Planets, Turns, Military**. **Turns** counts economy ticks completed (`turnsPlayed`) for that empire. **Prt** shows `[PN]` when that commander still has **new-empire protection** (same idea as your own `[P15]` badge in the header). You cannot **attack** or run **covert ops** against a protected rival until their protection turns expire.
 
 You can see each rival's key stats at a glance. **Click any rival's name** to auto-select them as a target in the WAR and OPS tabs — the target dropdown updates instantly.
 

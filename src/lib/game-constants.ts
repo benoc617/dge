@@ -23,7 +23,7 @@ export const PLANET_CONFIG: Record<
   ANTI_POLLUTION: { label: "Anti-Pollution", baseCost: 18000, baseProduction: 100, desc: "Absorbs pollution from petroleum" },
 };
 
-export const COST_INFLATION = 0.000001;
+export const COST_INFLATION = 0.001;
 
 // --- Population ---
 export const POP = {
@@ -160,15 +160,15 @@ export const DEFICIT = {
 export const NETWORTH = {
   POPULATION: 0.0002,
   CREDITS: 0.000015,
-  PLANETS: 3,
-  SOLDIER: 0.015,
-  FIGHTER: 0.08,
-  STATION: 0.05,
-  LIGHT_CRUISER: 0.08,
-  HEAVY_CRUISER: 0.15,
-  CARRIER: 0.20,
-  GENERAL: 0.03,
-  COVERT: 0.08,
+  PLANETS: 2,
+  SOLDIER: 0.04,
+  FIGHTER: 0.12,
+  STATION: 0.12,
+  LIGHT_CRUISER: 0.12,
+  HEAVY_CRUISER: 0.20,
+  CARRIER: 0.25,
+  GENERAL: 0.05,
+  COVERT: 0.10,
 } as const;
 
 // --- Civil Status ---
@@ -210,7 +210,7 @@ export const START = {
   POPULATION: 25000,
   TAX_RATE: 25,
   TURNS: 100,
-  PROTECTION_TURNS: 20,
+  PROTECTION_TURNS: 15,
   PLANETS: [
     { type: "FOOD" as const, count: 2 },
     { type: "ORE" as const, count: 2 },

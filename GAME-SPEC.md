@@ -342,15 +342,15 @@ Empire collapses if `population < 10` or `totalPlanets == 0`.
 netWorth = floor(
   population × 0.0002 +
   credits × 0.000015 +
-  totalPlanets × 3 +
-  soldiers × 0.015 +
-  fighters × 0.08 +
-  defenseStations × 0.05 +
-  lightCruisers × 0.08 +
-  heavyCruisers × 0.15 +
-  carriers × 0.20 +
-  generals × 0.03 +
-  covertAgents × 0.08
+  totalPlanets × 2 +
+  soldiers × 0.04 +
+  fighters × 0.12 +
+  defenseStations × 0.12 +
+  lightCruisers × 0.12 +
+  heavyCruisers × 0.20 +
+  carriers × 0.25 +
+  generals × 0.05 +
+  covertAgents × 0.10
 )
 ```
 
@@ -389,7 +389,7 @@ Three equally likely events:
 
 ### Step 19: Protection
 
-New empires get 20 turns of protection (`isProtected`, `protectionTurns`). Decrements each turn; when `protectionTurns` reaches 0, `isProtected` becomes false.
+New empires get 15 turns of protection (`isProtected`, `protectionTurns`). Decrements each turn; when `protectionTurns` reaches 0, `isProtected` becomes false.
 
 **Enforcement:** While protected (`isProtected` and `protectionTurns > 0`), a rival **cannot** use player-targeting **`attack_conventional`**, **`attack_guerrilla`**, **`attack_nuclear`**, **`attack_chemical`**, **`attack_psionic`**, or **`covert_op`** against that empire — the action fails with a clear message. **`attack_pirates`** (PvE) is not blocked. The Galactic Powers panel shows `[PN]` when a commander still has protection turns.
 
@@ -712,10 +712,9 @@ pirateStrength = max(30, playerStrength × pirateDifficulty)
 
 Victory if `playerStrength > pirateStrength`:
 ```
-strengthBonus = sqrt(playerStrength)
-lootCredits = alterNumber(round(3000 + strengthBonus × 80 + turnsPlayed × 50), 25%)
-lootOre = alterNumber(round(100 + strengthBonus × 5), 25%)
-lootFood = alterNumber(round(50 + strengthBonus × 3), 25%)
+lootCredits = alterNumber(round(3000 + playerStrength × 15 + turnsPlayed × 40), 25%)
+lootOre = alterNumber(round(100 + playerStrength × 0.8), 25%)
+lootFood = alterNumber(round(50 + playerStrength × 0.5), 25%)
 
 casualtyRate = max(0.005, 0.04 / dominance)   // dominance = playerStr / pirateStr
 ```
@@ -1054,7 +1053,7 @@ All game constants live in `src/lib/game-constants.ts`. This is the single sourc
 
 | Constant | Value | Location |
 |----------|-------|----------|
-| `COST_INFLATION` | 0.000001 | Planet cost scaling |
+| `COST_INFLATION` | 0.001 | Planet cost scaling |
 | `POP.BIRTH_RATE` | 0.03 | Base birth rate |
 | `POP.DEATH_RATE` | 0.008 | Base death rate |
 | `POP.URBAN_GROWTH_FACTOR` | 0.45 | Birth multiplier per urban production |
