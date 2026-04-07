@@ -79,7 +79,7 @@ You manage an interstellar empire across **100 turns**. Each turn you take one a
 - **10 covert operations** — spy, insurgent aid, dissension, demoralize, bombing, hostages, sabotage, and more
 - **22 technologies** across 5 research categories
 - **Global market** with supply/demand pricing, Solar Bank (loans, bonds, lottery)
-- **5 AI opponents** powered by Google Gemini (configurable model, default `gemini-2.5-flash`) with distinct strategic personas — chosen during game setup. Works offline with a built-in rule-based fallback when no API key is set.
+- **Up to 5 AI opponents** powered by Google Gemini (configurable model, default `gemini-2.5-flash`) with 7 distinct strategic personas — **randomly assigned** at galaxy creation (Economy, Military, Research, Stealth, Turtle, Diplomatic, Optimal). The Optimal AI uses built-in Monte Carlo Tree Search and never calls Gemini. Works offline with a built-in rule-based fallback when no API key is set.
 
 ### UI & Controls
 
@@ -110,7 +110,7 @@ On a host with a matching Node install and `DATABASE_URL`, the same `npm run sim
 
 **Session sim** (`--session sequential` or `simultaneous`): creates a real `GameSession`, runs the same code paths as the HTTP game (`getCurrentTurn` / `advanceTurn`, or door-game `openFullTurn` / `closeFullTurn`). The temp galaxy is deleted after the report. Use `--apd N` with simultaneous (`default 5` in live games; `1` for shorter sims).
 
-Preset strategies (default roster cycles one per simulated player): `balanced`, `economy_rush`, `military_rush`, `turtle`, `random`, `research_rush`, `credit_leverage`, `growth_focus`. Use `--players 8` to run all presets in one sim. `sim:balance` runs 25×100-turn games with aggregate win rates and balance notes.
+Preset strategies (default roster cycles one per simulated player): `balanced`, `economy_rush`, `military_rush`, `turtle`, `random`, `research_rush`, `credit_leverage`, `growth_focus`, `mcts`. Use `--players 9` to run all presets in one sim. `sim:balance` runs 25×100-turn games with aggregate win rates and balance notes.
 
 ## Tech Stack
 
@@ -158,8 +158,10 @@ src/
     research.ts                      # Tech tree (22 techs, 5 categories)
     gemini.ts                        # AI prompts (neutral rival targeting) + local fallback
     rng.ts                           # Seedable PRNG (mulberry32)
-    simulation.ts                    # Headless simulation engine
+    simulation.ts                    # Headless simulation engine (StrategyContext, 9 preset strategies)
     simulation-harness.ts            # Full session simulation runner (sequential + simultaneous)
+    sim-state.ts                     # Pure in-memory empire state + evalState heuristic for search algorithms
+    search-opponent.ts               # MCTS and MaxN search for the Optimal AI opponent
     prisma.ts                        # Database client
     player-auth.ts                   # Player credential resolution (UserAccount-aware)
     player-init.ts                   # Starter empire/planet creation (shared by register, join, AI setup)

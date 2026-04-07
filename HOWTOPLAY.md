@@ -139,10 +139,10 @@ The left panel shows your empire status in a **compact grid layout**: Net Worth 
   - **Tourism** — High credit income but fragile in wartime.
   - **Petroleum** — Produces fuel and decent credit income, but generates serious pollution. Every 2 petroleum planets requires ~1 anti-pollution planet to offset. Watch for the **POLLUTION ALERT** in your situation report.
   - **Urban** — Each supports 20,000 population and generates urban tax. Critical for growth.
-  - **Education** — Brings +400 immigrants per planet per turn.
+  - **Education** — Brings +700 immigrants per planet per turn.
   - **Government** — Reduces maintenance costs. Required for generals (50 cap/planet) and covert agents (300 cap/planet).
   - **Supply** — Auto-produces military units each turn based on your allocation. Even 1 supply planet delivers passive output — units arrive without spending an action turn.
-  - **Research** — Cost 20,000 cr (before inflation). Generates 500 RP/turn and light cruisers.
+  - **Research** — Cost 20,000 cr (before inflation). Generates 750 RP/turn and light cruisers. Half maintenance cost compared to other planet types.
   - **Anti-Pollution** — Absorbs pollution. Each anti-pollution planet neutralizes ~2 petroleum planets' worth of contamination.
 - **Set Tax Rate** — Higher taxes = more income but less population growth. 20–35% is safe for growth; 40–60% for income; above 60% and people flee.
 - **Set Sell Rates** — Percentage of produced food/ore/petroleum auto-sold each turn.
@@ -158,11 +158,11 @@ Buy units to defend your empire and attack others:
 | Soldier (280 cr) | Ground combat, pirate raids | Cheapest unit, good in numbers |
 | General (780 cr) | Required for attacks | Need government planets (50 per planet cap) |
 | Fighter (380 cr) | Orbital and pirate combat | Core of your fleet |
-| Defense Station (520 cr) | Static defense | Strong on defense, can't attack |
+| Defense Station (598 cr) | Static defense | Strong on defense, can't attack |
 | Light Cruiser (950 cr) | Space + orbital combat | Also produced by Research planets |
 | Heavy Cruiser (1,900 cr) | Space superiority | Dominates the space front |
 | Carrier (1,430 cr) | Fleet support | Boosts carrier capacity |
-| Covert Agent (4,090 cr) | Espionage operations | Need government planets (300 per planet cap) |
+| Covert Agent (2,000 cr) | Espionage operations | Need government planets (300 per planet cap) |
 | Command Ship (20,000 cr) | Unique flagship | Boosts heavy cruiser strength, grows over time |
 
 **Effectiveness** starts at 100% and drops when you lose battles. Recovers +2%/turn. Low effectiveness makes your entire army weaker.
@@ -211,7 +211,7 @@ Covert agents cost 2,000 credits each. Your agents can be detected and killed. M
 
 ### 6. RES (Research)
 
-Research planets generate 300 points/turn. Spend points to unlock technologies across 5 categories:
+Research planets generate 750 points/turn (base; +25% with Research Accelerator tech). Spend points to unlock technologies across 5 categories:
 
 - **Agriculture** — Boost food production (8K–25K RP)
 - **Industry** — Boost ore/petroleum, reduce maintenance, tourism boom (10K–35K RP)
@@ -219,7 +219,7 @@ Research planets generate 300 points/turn. Spend points to unlock technologies a
 - **Society** — Population growth, civil stability, income bonuses (8K–20K RP)
 - **Deep Space** — Light cruiser upgrades, research speed boost (35K–120K RP)
 
-Research planets cost 20,000 credits and produce 500 RP/turn. With one research planet you'll accumulate ~25,000 RP over 50 turns — enough for two entry-level techs. Two or three research planets lets you unlock several mid-tier upgrades by end-game. Tier 2 military unlocks (60K–120K RP) require a dedicated research strategy.
+Research planets cost 20,000 credits and produce 750 RP/turn (at half normal maintenance cost). With one research planet you'll accumulate ~37,500 RP over 50 turns — enough for three or four entry-level techs. Two or three research planets lets you unlock multiple mid-tier upgrades by end-game, and with the Research Accelerator tech (+25% speed) the pace accelerates further. Tier 2 military unlocks (60K–120K RP) require a dedicated research strategy. **Passive tech effects apply automatically every turn** — no extra action once a tech is unlocked.
 
 **Priority techs:** Military unit upgrades make the biggest difference in combat. A Tier 2 soldier is 2× stronger on ground than Tier 0.
 
@@ -275,7 +275,7 @@ Unrest reduces production, causes military desertion (8% per level!), increases 
 
 The game ends after 100 turns. **Net worth** determines the winner:
 
-- Planets × 3 each
+- Planets × 2 each
 - Population × 0.0002 per person
 - Credits × 0.000015 per credit
 - Military units contribute based on type (heavy cruisers and carriers worth most)

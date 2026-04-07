@@ -149,6 +149,8 @@ Base prices: Food = 80, Ore = 120, Petroleum = 300 credits.
 | Petroleum sales | From step 4 |
 | Galactic redistribution | `coordinatorPool / playerCount / 200`, linearly ramped during first 20 turns |
 
+**Passive tech income bonus:** if any `credits_bonus` techs are unlocked (e.g. `soc_3` +15%), `totalIncome` is multiplied: `totalIncome × (1 + sum(creditsBonus percents) / 100)`. This stacks across all active `credits_bonus` tech effects.
+
 ### Step 6: Expenses
 
 **Planet maintenance:**
@@ -157,12 +159,15 @@ Base prices: Food = 80, Ore = 120, Petroleum = 300 credits.
 perPlanetCost = 600 + turnsPlayed × 8
 ohFactor = totalPlanets × 0.05
 overheadMult = 1 + ohFactor + ohFactor² × 0.3
-baseMaint = max(0, totalPlanets - govPlanets) × perPlanetCost × overheadMult
+// Weighted sum: each planet type contributes its maintenanceMult (default 1.0; RESEARCH = 0.5)
+maintWeightSum = Σ (maintenanceMult[p.type] for non-government planets p)
+techReduction = Σ percent for all unlocked planet_maint_reduction techs  // e.g. ind_3 = 15%
+baseMaint = max(0, maintWeightSum) × perPlanetCost × overheadMult × (1 - min(techReduction, 90) / 100)
 govReduction = floor((govPlanets × 4 / max(1, totalPlanets - govPlanets)) × baseMaint)
 planetMaintenance = alterNumber(max(0, baseMaint - govReduction), 5%)
 ```
 
-The superlinear overhead formula means maintenance grows quadratically with empire size. Government planets provide a reduction proportional to their ratio relative to non-government planets.
+The superlinear overhead formula means maintenance grows quadratically with empire size. Government planets provide a reduction proportional to their ratio relative to non-government planets. Research planets cost half normal maintenance (`maintenanceMult: 0.5`). The `planet_maint_reduction` tech effect (e.g. `ind_3`) further discounts the base.
 
 **Military maintenance** (credits per turn):
 
@@ -171,7 +176,7 @@ The superlinear overhead formula means maintenance grows quadratically with empi
 | Soldier | 10 |
 | General | 10 |
 | Fighter | 30 |
-| Defense station | 40 |
+| Defense station | 52 |
 | Light cruiser | 30 |
 | Heavy cruiser | 50 |
 | Carrier | 25 |
@@ -206,10 +211,10 @@ bornPrime = population × 0.03
 urbanBonus = sumOfAllUrbanPlanetProduction / 100 × 0.45
 bornBase = bornPrime × urbanBonus
 pollutionPenalty = bornBase × pollutionRatio
-civilPenalty = bornBase × (civilStatus × 0.05)
+civilPenalty = bornBase × (civilStatus × 0.05 × (1 - min(sum(civilUnrestReduction percents), 90) / 100))
 taxMult = getTaxBirthMultiplier(taxRate)  // see table below
 taxPenalty = bornPrime × urbanBonus × taxMult × taxRate × 0.002 × 0.5
-births = max(0, round(bornBase - pollutionPenalty - civilPenalty - taxPenalty))
+births = max(0, round((bornBase - pollutionPenalty - civilPenalty - taxPenalty) × (1 + sum(popGrowthBonus percents) / 100)))
 if food < 0: births = floor(births / 4)
 births = alterNumber(births, 5%)
 ```
@@ -240,7 +245,7 @@ deaths = alterNumber(round(deathsPrime + deathsPollution + deathsCivil), 5%)
 **Immigration** (from education planets):
 
 ```
-immigBase = educationPlanets × 400
+immigBase = educationPlanets × 700
 immigPollution = immigBase × pollutionRatio
 immigCivil = immigBase × (civilStatus × 0.05)
 immigTax = immigBase × taxRate × 0.002
@@ -347,7 +352,7 @@ netWorth = floor(
   totalPlanets × 2 +
   soldiers × 0.04 +
   fighters × 0.12 +
-  defenseStations × 0.12 +
+  defenseStations × 0.10 +
   lightCruisers × 0.12 +
   heavyCruisers × 0.20 +
   carriers × 0.25 +
@@ -418,7 +423,7 @@ One action per turn. Each action is processed after the turn tick.
 | EDUCATION | 14,000 | 100 | Linear immigration (+400/planet) |
 | GOVERNMENT | 12,000 | 100 | Reduces maintenance, houses generals + covert agents |
 | SUPPLY | 20,000 | 100 | Auto-produces military units |
-| RESEARCH | 20,000 | 500 | Generates research points (500/turn) + light cruisers |
+| RESEARCH | 20,000 | 750 | Generates research points (750/turn) + light cruisers; half maintenance cost (`maintenanceMult: 0.5`) |
 | ANTI_POLLUTION | 18,000 | 100 | Absorbs pollution from petroleum |
 
 #### `set_tax_rate`
@@ -444,7 +449,7 @@ One action per turn. Each action is processed after the turn tick.
 | Soldier | 280 | None |
 | General | 780 | Max `govPlanets × 50` |
 | Fighter | 380 | None |
-| Defense Station | 520 | None |
+| Defense Station | 598 | None |
 | Light Cruiser | 950 | None (also produced by Research planets) |
 | Heavy Cruiser | 1,900 | None |
 | Carrier | 1,430 | None |
@@ -543,7 +548,7 @@ Market starts with 500,000 of each resource, ratio 1.0.
 
 #### `bank_loan`
 - Amount: 1,000 to 999,999 (default 100,000)
-- Interest: 50% + 10% per active loan
+- Interest: 25% base + 10% per additional active loan
 - Duration: 20 turns
 - Max 3 active loans
 - Each turn: `payment = floor(balance / turnsRemaining)`, plus interest
@@ -571,7 +576,7 @@ Market starts with 500,000 of each resource, ratio 1.0.
 - Parameter: `techId`
 - Cost: tech's research point cost
 - Prerequisites must be met (prior techs unlocked)
-- Research points generated: `researchPlanets × 300` per turn
+- Research points generated per turn: `researchPlanets × 750 × researchSpeedMult` where `researchSpeedMult = 1 + sum(research_speed tech percents) / 100` (e.g. `ds_research` adds +25%)
 
 ### 4.9 Other
 
@@ -729,7 +734,7 @@ Effectiveness: +15 on win, -5 on loss.
 
 ## 6. Technology Tree
 
-5 categories, 22 technologies. Research planets generate 300 points/turn. Technologies have costs, prerequisites, and permanent or temporary effects.
+5 categories, 22 technologies. Research planets generate **750 points/turn** (base; multiplied by Research Accelerator tech if unlocked). Technologies have costs, prerequisites, and permanent or temporary effects. Passive tech bonuses from unlocked techs apply every turn tick automatically — no extra action needed.
 
 ### Agriculture
 | ID | Name | Cost | Prereqs | Effect |
@@ -743,7 +748,7 @@ Effectiveness: +15 on win, -5 on loss.
 |----|------|------|---------|--------|
 | ind_1 | Advanced Mining | 10,000 | — | +10% ore production (permanent) |
 | ind_2 | Refined Petroleum | 18,000 | ind_1 | +10% petroleum production (permanent) |
-| ind_3 | Efficient Maintenance | 35,000 | ind_1 | -15% planet maintenance (permanent) |
+| ind_3 | Efficient Maintenance | 15,000 | ind_1 | -15% planet maintenance (permanent) |
 | ind_4 | Tourism Boom | 12,000 | — | +100% tourism income (10 turns) |
 
 ### Military
@@ -763,15 +768,15 @@ Effectiveness: +15 on win, -5 on loss.
 | ID | Name | Cost | Prereqs | Effect |
 |----|------|------|---------|--------|
 | soc_1 | Population Initiative | 8,000 | — | +10% population growth (permanent) |
-| soc_2 | Civil Stability Program | 20,000 | soc_1 | -20% civil unrest effects (permanent) |
-| soc_3 | Economic Stimulus | 15,000 | — | +15% credits income (20 turns) |
+| soc_2 | Civil Stability Program | 15,000 | soc_1 | -20% civil unrest effects (permanent) |
+| soc_3 | Economic Stimulus | 10,000 | — | +15% credits income (30 turns) |
 
 ### Deep Space
 | ID | Name | Cost | Prereqs | Effect |
 |----|------|------|---------|--------|
 | ds_lc_1 | Light Cruiser Upgrades I | 45,000 | — | Light Cruisers → Tier 1 |
 | ds_lc_2 | Light Cruiser Upgrades II | 120,000 | ds_lc_1 | Light Cruisers → Tier 2 |
-| ds_research | Research Accelerator | 35,000 | — | +25% research speed (permanent) |
+| ds_research | Research Accelerator | 20,000 | — | +25% research speed (permanent) |
 
 ---
 
@@ -788,8 +793,8 @@ New empires begin with:
 | Population | 25,000 |
 | Tax rate | 25% |
 | Turns | 100 |
-| Protection turns | 20 |
-| Sell rates | All 0% |
+| Protection turns | 15 |
+| Sell rates | food 0%, ore 50%, petroleum 50% (defaults) |
 
 **Starting planets:** 2 Food, 2 Ore, 2 Urban, 1 Government (7 total)
 
@@ -863,7 +868,7 @@ New empires begin with:
 - `fromPlayerId`, `toPlayerId`, `subject`, `body`, `isRead`
 
 ### Loan
-- `empireId`, `principal`, `balance`, `interestRate` (50), `turnsRemaining` (20)
+- `empireId`, `principal`, `balance`, `interestRate` (25), `turnsRemaining` (20)
 
 ### Bond
 - `empireId`, `amount`, `interestRate` (10), `turnsRemaining` (30)
@@ -898,7 +903,7 @@ New empires begin with:
 
 AI players use Google Gemini to make decisions (model configurable via `GEMINI_MODEL` env var, default `gemini-2.5-flash`). Each AI has a persona string injected into the prompt. When no Gemini API key is available, a local rule-based fallback makes persona-aware strategic decisions (economy expansion, military builds, etc.) without any external API call.
 
-### 5 AI Personas
+### 7 AI Personas
 
 | Name | Strategy |
 |------|----------|
@@ -907,10 +912,12 @@ AI players use Google Gemini to make decisions (model configurable via `GEMINI_M
 | Spy Master | Government planets → covert agents → destabilize targets → attack when civil status is high. |
 | Diplomat | Treaties and coalitions. Peaceful expansion. Only attack isolated empires. |
 | Turtle | Maximum defense; contest a runaway leader with decisive attacks when they are vulnerable; counter-attack hard. |
+| Researcher | Build research planets early (2–3 minimum); unlock the highest-value techs in order; light military until tech advantages multiply combat power. |
+| Optimal | Uses **Monte Carlo Tree Search (MCTS)** internally — never calls Gemini. Given a 45-second wall-clock budget for live play (200ms in simulations), it runs thousands of simulated game trajectories to select the statistically strongest action. |
 
 ### AI Setup Flow
 
-When a player creates a new galaxy from the Command Center hub, **galaxy session settings** (name, visibility, timer, max players) and **optional AI rivals** (toggle any of the 5 personas, or none for solo) are configured on **one screen**. After `POST /api/game/register` succeeds, if at least one AI is selected the client immediately calls `POST /api/ai/setup` with a `names` array, then enters the game. AI turns run automatically — see Turn Order below.
+When a player creates a new galaxy from the Command Center hub, **galaxy session settings** (name, visibility, timer, max players) and **optional AI rivals** (0–5, using the −/+ picker) are configured on **one screen**. Each AI receives a randomly selected commander name from the Fighting Baseball name pool and a **secretly assigned strategy** chosen from the 7 personas above — the player cannot choose which strategy each AI uses. After `POST /api/game/register` succeeds, if at least one AI is selected the client immediately calls `POST /api/ai/setup` with a `names` array, then enters the game. AI turns run automatically — see Turn Order below.
 
 ### AI Prompt Structure
 
@@ -1034,7 +1041,7 @@ UI: **`/admin`** (`src/app/admin/page.tsx`) — link to **`/admin/users`**; gala
 
 1. **Sign up** (`SIGN UP`): username, full name, email, password + confirm → then **Login** with username/password → **Command Center** hub lists active games and offers **Create New Galaxy** / **Join Existing Galaxy** / **Log out**.
 2. **Login** without a `UserAccount` falls back to legacy **`POST /api/game/status`** resume (same as before).
-3. **Create path** (from hub): single **NEW GALAXY** screen — optional galaxy name, public/private, turn timer, **max players**, and optional AI toggles (5 commanders). The client sends the account password from the logged-in session (no password fields). On submit: `POST /api/game/register` → if any AIs selected, `POST /api/ai/setup` with `{ names: [...], gameSessionId }` → main game. Private invite codes appear in **CFG** after entering the game.
+3. **Create path** (from hub): single **NEW GALAXY** screen — optional galaxy name, public/private, turn timer, **max players**, and an **AI count picker** (0–5 AIs; strategy is randomly assigned per AI — not selectable). The client sends the account password from the logged-in session (no password fields). On submit: `POST /api/game/register` → if any AIs selected, `POST /api/ai/setup` with `{ names: [...], gameSessionId }` → main game. Private invite codes appear in **CFG** after entering the game.
 4. **Join path** (from hub): invite code or public list — client sends account password from the logged-in session (no password fields on the join screen) → joins session → starts game (no AI setup — creator manages AIs).
 
 ### Keyboard Shortcuts
@@ -1059,7 +1066,7 @@ All game constants live in `src/lib/game-constants.ts`. This is the single sourc
 | `POP.BIRTH_RATE` | 0.03 | Base birth rate |
 | `POP.DEATH_RATE` | 0.008 | Base death rate |
 | `POP.URBAN_GROWTH_FACTOR` | 0.45 | Birth multiplier per urban production |
-| `POP.EDUCATION_IMMIGRATION` | 400 | Immigrants per education planet |
+| `POP.EDUCATION_IMMIGRATION` | 700 | Immigrants per education planet |
 | `POP.OVERCROWD_CAPACITY_PER_URBAN` | 20,000 | Pop capacity per urban planet |
 | `POP.OVERCROWD_EMIGRATION_RATE` | 0.10 | Emigration rate on excess |
 | `POP.FOOD_PER_PERSON` | 0.006 | Food consumption per person |
