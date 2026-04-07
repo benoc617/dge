@@ -16,6 +16,7 @@ function emptyCtx(over: Partial<StrategyContext> = {}): StrategyContext {
     taxRate: 30,
     civilStatus: 0,
     turnsPlayed: 0,
+    netWorth: 0,
     planets: [],
     totalPlanets: 0,
     soldiers: 0,
@@ -30,6 +31,8 @@ function emptyCtx(over: Partial<StrategyContext> = {}): StrategyContext {
     researchPoints: 0,
     unlockedTechIds: [],
     activeLoanCount: 0,
+    supplyRateStation: 0,
+    rivals: [],
     ...over,
   };
 }
@@ -67,5 +70,91 @@ describe("simulation strategies", () => {
     );
     expect(a.action).toBe("bank_loan");
     expect(a.params).toMatchObject({ amount: 100000 });
+  });
+
+  it("turtle buys stations in bulk when income exceeds maintenance", () => {
+    // 4 ore planets (income ≈ 35k) + 3 tourism (≈22.5k) = freeIncome >> stationMaint(0)
+    const a = pickSimAction(
+      "turtle",
+      emptyCtx({
+        credits: 200000,
+        planets: [
+          { type: "FOOD", count: 3 },
+          { type: "ORE", count: 4 },
+          { type: "TOURISM", count: 3 },
+          { type: "URBAN", count: 3 },
+          { type: "GOVERNMENT", count: 2 },
+        ],
+        totalPlanets: 15,
+        defenseStations: 0,
+      }),
+      20,
+    );
+    expect(a.action).toBe("buy_stations");
+    expect((a.params.amount as number)).toBeGreaterThan(50); // should buy many at once
+  });
+
+  it("turtle keeps buying economy planets when income base is low", () => {
+    // FOOD already at 3, no ORE or TOURISM → freeIncome near 0 → should buy ORE
+    const a = pickSimAction(
+      "turtle",
+      emptyCtx({
+        credits: 50000,
+        planets: [{ type: "FOOD", count: 3 }],
+        totalPlanets: 3,
+      }),
+      5,
+    );
+    expect(a.action).toBe("buy_planet");
+    expect(a.params.type).toBe("ORE");
+  });
+
+  it("military_rush attacks weakest unprotected rival when strong enough", () => {
+    const a = pickSimAction(
+      "military_rush",
+      emptyCtx({
+        credits: 50000,
+        soldiers: 500,
+        fighters: 80,
+        generals: 6,       // already maxed so buy_generals won't fire first
+        lightCruisers: 30, // already maxed
+        heavyCruisers: 10, // already maxed
+        planets: [
+          { type: "ORE", count: 4 },
+          { type: "FOOD", count: 3 },
+          { type: "URBAN", count: 3 },
+          { type: "GOVERNMENT", count: 2 },
+        ],
+        totalPlanets: 12,
+        rivals: [
+          { name: "EnemyA", netWorth: 120, isProtected: true },
+          { name: "EnemyB", netWorth: 80,  isProtected: false },
+          { name: "EnemyC", netWorth: 60,  isProtected: false },
+        ],
+      }),
+      15,
+    );
+    expect(a.action).toBe("attack_conventional");
+    expect(a.params.target).toBe("EnemyC"); // weakest unprotected
+  });
+
+  it("military_rush skips PvP when all rivals are protected", () => {
+    const a = pickSimAction(
+      "military_rush",
+      emptyCtx({
+        credits: 10000,
+        soldiers: 600,
+        fighters: 100,
+        planets: [{ type: "ORE", count: 4 }, { type: "FOOD", count: 3 }, { type: "URBAN", count: 3 }, { type: "GOVERNMENT", count: 2 }],
+        totalPlanets: 12,
+        rivals: [
+          { name: "Safe1", netWorth: 50, isProtected: true },
+          { name: "Safe2", netWorth: 70, isProtected: true },
+        ],
+      }),
+      15,
+    );
+    // Should NOT return attack_conventional
+    expect(a.action).not.toBe("attack_conventional");
   });
 });

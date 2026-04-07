@@ -13,7 +13,7 @@ import { setSeed } from "./rng";
 import type { PlanetType, Prisma } from "@prisma/client";
 
 export type EmpireForStrategySim = Prisma.EmpireGetPayload<{
-  include: { planets: true; army: true; research: true };
+  include: { planets: true; army: true; research: true; supplyRates: true };
 }>;
 
 // ---------------------------------------------------------------------------
@@ -124,6 +124,7 @@ export interface StrategyContext {
   taxRate: number;
   civilStatus: number;
   turnsPlayed: number;
+  netWorth: number;
   planets: { type: string; count: number }[];
   totalPlanets: number;
   soldiers: number;
@@ -138,9 +139,17 @@ export interface StrategyContext {
   researchPoints: number;
   unlockedTechIds: string[];
   activeLoanCount: number;
+  /** Current station production allocation (0-100). 0 means supply rates not configured yet. */
+  supplyRateStation: number;
+  /** Rivals in the same session; empty in orphan (no-session) mode. Unprotected rivals are valid PvP targets. */
+  rivals: { name: string; netWorth: number; isProtected: boolean }[];
 }
 
-export function strategyContextFromEmpire(empire: EmpireForStrategySim, activeLoanCount: number): StrategyContext {
+export function strategyContextFromEmpire(
+  empire: EmpireForStrategySim,
+  activeLoanCount: number,
+  rivals: { name: string; netWorth: number; isProtected: boolean }[] = [],
+): StrategyContext {
   const army = empire.army;
   if (!army) {
     throw new Error("strategyContextFromEmpire: empire has no army");
@@ -162,6 +171,7 @@ export function strategyContextFromEmpire(empire: EmpireForStrategySim, activeLo
     taxRate: empire.taxRate,
     civilStatus: empire.civilStatus,
     turnsPlayed: empire.turnsPlayed,
+    netWorth: empire.netWorth,
     planets: planetCounts,
     totalPlanets: empire.planets.length,
     soldiers: army.soldiers,
@@ -176,6 +186,8 @@ export function strategyContextFromEmpire(empire: EmpireForStrategySim, activeLo
     researchPoints: empire.research?.accumulatedPoints ?? 0,
     unlockedTechIds: empire.research?.unlockedTechIds ?? [],
     activeLoanCount,
+    supplyRateStation: empire.supplyRates?.rateStation ?? 0,
+    rivals,
   };
 }
 
@@ -183,7 +195,7 @@ export async function buildStrategyContextForEmpire(empireId: string): Promise<S
   const [empire, activeLoanCount] = await Promise.all([
     prisma.empire.findUnique({
       where: { id: empireId },
-      include: { planets: true, army: true, research: true },
+      include: { planets: true, army: true, research: true, supplyRates: true },
     }),
     prisma.loan.count({ where: { empireId } }),
   ]);
@@ -272,15 +284,15 @@ function economyStrategy(ctx: StrategyContext, turn: number): { action: ActionTy
 }
 
 function militaryStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
-  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 50, petroleumSellRate: 50 } };
-  if (turn === 1) return { action: "set_tax_rate", params: { rate: 15 } };
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 60, petroleumSellRate: 60 } };
+  if (turn === 1) return { action: "set_tax_rate", params: { rate: 20 } };
 
-  // Economic foundation first (turns 2-12)
-  if (turn < 12) {
-    if (countType(ctx, "ORE") < 4 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
-    if (countType(ctx, "FOOD") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
-    if (countType(ctx, "URBAN") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
-    if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
+  // Economic foundation first (turns 2-10)
+  if (turn < 10) {
+    if (countType(ctx, "ORE") < 4 && ctx.credits >= 11000) return { action: "buy_planet", params: { type: "ORE" } };
+    if (countType(ctx, "FOOD") < 3 && ctx.credits >= 15000) return { action: "buy_planet", params: { type: "FOOD" } };
+    if (countType(ctx, "URBAN") < 3 && ctx.credits >= 15000) return { action: "buy_planet", params: { type: "URBAN" } };
+    if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 13000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
   }
 
   // Military buildup (continuous)
@@ -290,7 +302,15 @@ function militaryStrategy(ctx: StrategyContext, turn: number): { action: ActionT
   if (ctx.lightCruisers < 30 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
   if (ctx.heavyCruisers < 10 && ctx.credits >= 19000) return { action: "buy_heavy_cruisers", params: { amount: 10 } };
 
-  // Raid pirates whenever strong enough
+  // PvP: attack weakest unprotected rival once our ground + space forces are combat-ready.
+  const pvpTarget = ctx.rivals
+    .filter((r) => !r.isProtected)
+    .sort((a, b) => a.netWorth - b.netWorth)[0];
+  if (pvpTarget && turn >= 10 && ctx.soldiers >= 300 && ctx.fighters >= 40) {
+    return { action: "attack_conventional", params: { target: pvpTarget.name } };
+  }
+
+  // Raid pirates whenever strong enough (income + effectiveness drain on NPC)
   if (ctx.soldiers > 100 && ctx.fighters > 10) return { action: "attack_pirates", params: {} };
 
   // Continue expanding military
@@ -303,31 +323,50 @@ function militaryStrategy(ctx: StrategyContext, turn: number): { action: ActionT
 }
 
 function turtleStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
-  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 60, petroleumSellRate: 60 } };
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 70, petroleumSellRate: 70 } };
+  if (turn === 1 && ctx.taxRate > 25) return { action: "set_tax_rate", params: { rate: 25 } };
 
-  // Lower tax for pop growth, build defense and resources
-  if (turn === 1 && ctx.taxRate > 20) return { action: "set_tax_rate", params: { rate: 20 } };
+  // Rough per-turn income estimate from ore, tourism, urban+population (credits units).
+  // BASE_ORE_PRICE(120)/SELL_RATIO_DIVISOR(1.2)*ORE.baseProduction(125)*sellRate(70%)=8750/planet.
+  // TOURISM.baseProduction = 8000/planet. URBAN tax ≈ 1200/planet + population*taxRate*0.002.
+  const oreIncome  = countType(ctx, "ORE")     * 8750;
+  const tourIncome = countType(ctx, "TOURISM") * 7500;
+  const urbIncome  = countType(ctx, "URBAN")   * 1200 + Math.floor(ctx.population * ctx.taxRate * 0.002);
+  const incomeEst  = oreIncome + tourIncome + urbIncome;
+  const stationMaint = ctx.defenseStations * 40;  // MAINT.STATION = 40 cr/station/turn
+  const freeIncome   = Math.max(0, incomeEst - stationMaint);
 
-  // Economy base — tourism for income, urban for pop
-  if (countType(ctx, "URBAN") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
-  if (countType(ctx, "FOOD") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
-  if (countType(ctx, "TOURISM") < 2 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
-  if (countType(ctx, "ORE") < 3 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
+  // Economy foundation — ore and tourism are the money-makers; food/urban sustain population.
+  if (countType(ctx, "FOOD")    < 3 && ctx.credits >= 15000) return { action: "buy_planet", params: { type: "FOOD" } };
+  if (countType(ctx, "ORE")     < 4 && ctx.credits >= 11000) return { action: "buy_planet", params: { type: "ORE" } };
+  if (countType(ctx, "TOURISM") < 3 && ctx.credits >= 15000) return { action: "buy_planet", params: { type: "TOURISM" } };
+  if (countType(ctx, "URBAN")   < 3 && ctx.credits >= 15000) return { action: "buy_planet", params: { type: "URBAN" } };
+  if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 13000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
 
-  // Build defensive military core early
-  if (ctx.defenseStations < 20 && ctx.credits >= 5200) return { action: "buy_stations", params: { amount: 10 } };
-  if (ctx.fighters < 30 && ctx.credits >= 3800) return { action: "buy_fighters", params: { amount: 10 } };
-  if (ctx.lightCruisers < 20 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
+  // Mass station purchases: spend most of credits when income can sustain the maintenance.
+  // Buy in large batches — the whole point of the turtle is a massive station wall.
+  if (freeIncome >= 10000 && ctx.credits >= 26000) {
+    const sustainable = Math.floor(freeIncome / 40);               // how many more we can afford to maintain
+    const affordable  = Math.floor(ctx.credits * 0.75 / 520);      // spend 75% of credits
+    const buyCount    = Math.min(sustainable, affordable, 2000);    // hard cap so one action isn't absurd
+    if (buyCount >= 5) return { action: "buy_stations", params: { amount: buyCount } };
+  }
 
-  // Raid pirates with defensive fleet — generates income without aggression vs players
-  if (ctx.fighters >= 15 && ctx.lightCruisers >= 10) return { action: "attack_pirates", params: {} };
+  // Keep building income planets as long as economy can still grow.
+  if (countType(ctx, "ORE")     < 7  && ctx.credits >= 11000) return { action: "buy_planet", params: { type: "ORE" } };
+  if (countType(ctx, "TOURISM") < 6  && ctx.credits >= 15000) return { action: "buy_planet", params: { type: "TOURISM" } };
+  if (countType(ctx, "URBAN")   < 6  && ctx.credits >= 15000) return { action: "buy_planet", params: { type: "URBAN" } };
 
-  // Continue building economy and defense
-  if (countType(ctx, "EDUCATION") < 2 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "EDUCATION" } };
-  if (countType(ctx, "TOURISM") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
-  if (ctx.defenseStations < 40 && ctx.credits >= 5200) return { action: "buy_stations", params: { amount: 10 } };
-  if (ctx.lightCruisers < 40 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
-  if (countType(ctx, "URBAN") < 6 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+  // Minimum fighters for pirate raids (income supplement, not primary goal).
+  if (ctx.fighters < 20 && ctx.credits >= 3800) return { action: "buy_fighters", params: { amount: 10 } };
+  if (ctx.fighters >= 15) return { action: "attack_pirates", params: {} };
+
+  // Any leftover credits → more stations.
+  if (ctx.credits >= 5200) {
+    const buyCount = Math.max(10, Math.floor(ctx.credits * 0.7 / 520));
+    return { action: "buy_stations", params: { amount: buyCount } };
+  }
+
   return { action: "end_turn", params: {} };
 }
 
@@ -506,7 +545,7 @@ export async function runSimulation(config: SimConfig): Promise<SimResult> {
       const [empire, activeLoanCount] = await Promise.all([
         prisma.empire.findUnique({
           where: { id: p.id },
-          include: { planets: true, army: true, research: true },
+          include: { planets: true, army: true, research: true, supplyRates: true },
         }),
         prisma.loan.count({ where: { empireId: p.id } }),
       ]);

@@ -54,6 +54,28 @@ export function phaseTurnForStrategy(totalTurns: number, turnsLeft: number): num
   return totalTurns - turnsLeft;
 }
 
+/** Fetch rival empire snapshots for PvP targeting context. */
+async function fetchRivals(
+  sessionId: string,
+  ownEmpireId: string,
+): Promise<{ name: string; netWorth: number; isProtected: boolean }[]> {
+  const players = await prisma.player.findMany({
+    where: { gameSessionId: sessionId },
+    include: {
+      empire: {
+        select: { id: true, netWorth: true, isProtected: true, protectionTurns: true, turnsLeft: true },
+      },
+    },
+  });
+  return players
+    .filter((p) => p.empire && p.empire.id !== ownEmpireId && p.empire.turnsLeft > 0)
+    .map((p) => ({
+      name: p.name,
+      netWorth: p.empire!.netWorth,
+      isProtected: p.empire!.isProtected && p.empire!.protectionTurns > 0,
+    }));
+}
+
 async function createSessionAndPlayers(config: SessionSimConfig): Promise<{
   sessionId: string;
   galaxyName: string;
@@ -250,7 +272,7 @@ export async function runSessionSimulation(config: SessionSimConfig): Promise<Si
 
         const empire = await prisma.empire.findUnique({
           where: { id: hp.empireId },
-          include: { planets: true, army: true, research: true },
+          include: { planets: true, army: true, research: true, supplyRates: true },
         });
         if (!empire?.army || empire.turnsLeft < 1) {
           await advanceTurn(sessionId);
@@ -269,8 +291,11 @@ export async function runSessionSimulation(config: SessionSimConfig): Promise<Si
           continue;
         }
 
-        const loanCount = await prisma.loan.count({ where: { empireId: empire.id } });
-        const ctx = strategyContextFromEmpire(empire, loanCount);
+        const [loanCount, rivals] = await Promise.all([
+          prisma.loan.count({ where: { empireId: empire.id } }),
+          fetchRivals(sessionId, empire.id),
+        ]);
+        const ctx = strategyContextFromEmpire(empire, loanCount, rivals);
         const phaseTurn = phaseTurnForStrategy(config.turns, empire.turnsLeft);
         const { action, params } = pickSimAction(hp.strategy, ctx, phaseTurn);
 
@@ -316,7 +341,7 @@ export async function runSessionSimulation(config: SessionSimConfig): Promise<Si
 
           const empire = await prisma.empire.findUnique({
             where: { id: pl.empire!.id },
-            include: { planets: true, army: true, research: true },
+            include: { planets: true, army: true, research: true, supplyRates: true },
           });
           if (!empire?.army) continue;
 
@@ -330,8 +355,11 @@ export async function runSessionSimulation(config: SessionSimConfig): Promise<Si
             break;
           }
 
-          const loanCount = await prisma.loan.count({ where: { empireId: empire.id } });
-          const ctx = strategyContextFromEmpire(empire, loanCount);
+          const [loanCount, rivals] = await Promise.all([
+            prisma.loan.count({ where: { empireId: empire.id } }),
+            fetchRivals(sessionId, empire.id),
+          ]);
+          const ctx = strategyContextFromEmpire(empire, loanCount, rivals);
           const phaseTurn = phaseTurnForStrategy(config.turns, empire.turnsLeft);
           const { action, params } = pickSimAction(hp.strategy, ctx, phaseTurn);
 
