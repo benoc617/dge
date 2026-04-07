@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { AI_CONFIGS } from "@/lib/ai-builtin-config";
+import { AI_NAME_POOL } from "@/lib/ai-builtin-config";
 import { validatePasswordStrength } from "@/lib/auth";
 import { AUTH } from "@/lib/game-constants";
 import {
@@ -388,16 +388,16 @@ export default function AdminPage() {
           </label>
           <div className="text-green-700 text-xs">Optional AI rivals (turn 0)</div>
           <div className="flex flex-wrap gap-2">
-            {AI_CONFIGS.map((c) => (
+            {AI_NAME_POOL.map((name) => (
               <button
-                key={c.name}
+                key={name}
                 type="button"
-                onClick={() => toggleAIName(c.name)}
+                onClick={() => toggleAIName(name)}
                 className={`text-[10px] px-2 py-1 border ${
-                  selectedAI.has(c.name) ? "border-yellow-600 text-yellow-400" : "border-green-900 text-green-700"
+                  selectedAI.has(name) ? "border-yellow-600 text-yellow-400" : "border-green-900 text-green-700"
                 }`}
               >
-                {c.name}
+                {name}
               </button>
             ))}
           </div>

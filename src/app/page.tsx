@@ -181,13 +181,7 @@ function parseTurnTimer(value: string): number {
   return TURN_TIMER_OPTIONS.find((o) => o.value === value)?.secs ?? 86400;
 }
 
-const AI_OPTIONS = [
-  { name: "Admiral Koss", persona: "economist", desc: "Shrewd galactic banker" },
-  { name: "Warlord Vrex", persona: "warlord", desc: "Ruthless military commander" },
-  { name: "Shadow Nyx", persona: "spymaster", desc: "Shadowy manipulator" },
-  { name: "Ambassador Sol", persona: "diplomat", desc: "Silver-tongued negotiator" },
-  { name: "Fortress Prime", persona: "turtle", desc: "Patient defender" },
-];
+const MAX_AI_COUNT = 5;
 
 interface GameOverData {
   standings: { name: string; isAI: boolean; netWorth: number; population: number; planets: number; credits: number; turnsPlayed: number; military: number }[];
@@ -248,7 +242,7 @@ export default function Home() {
   const [setupPhase, setSetupPhase] = useState<
     "login" | "signup" | "hub" | "join-game" | "create-galaxy"
   >("login");
-  const [selectedAI, setSelectedAI] = useState<Set<string>>(new Set(["Admiral Koss", "Warlord Vrex", "Shadow Nyx"]));
+  const [aiCount, setAiCount] = useState(3);
   const [inputGalaxyName, setInputGalaxyName] = useState("");
   const [inputIsPublic, setInputIsPublic] = useState(true);
   const [inputTurnTimer, setInputTurnTimer] = useState("24h");
@@ -400,14 +394,13 @@ export default function Home() {
     if (typeof data.name === "string") setInputName(data.name);
 
     const sessionId = data.gameSessionId as string | undefined;
-    if (sessionId && selectedAI.size > 0) {
+    if (sessionId && aiCount > 0) {
       addEvent("Setting up AI opponents...");
       const resAi = await apiFetch("/api/ai/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          count: selectedAI.size,
-          names: Array.from(selectedAI),
+          count: aiCount,
           gameSessionId: sessionId,
         }),
       });
@@ -645,15 +638,6 @@ export default function Home() {
     setAuthGames([]);
     setLoginPassword("");
     setSetupPhase("login");
-  }
-
-  function toggleAI(name: string) {
-    setSelectedAI((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
   }
 
   async function handleSkipTurn() {
@@ -1355,35 +1339,27 @@ export default function Home() {
           <div className="border-t border-green-900 pt-4">
             <div className="text-green-500 text-xs font-bold tracking-wider mb-1">AI OPPONENTS (OPTIONAL)</div>
             <p className="text-green-700 text-[10px] mb-3">
-              Toggle rivals to add before launch, or clear all for solo play.
+              Each AI is assigned a random strategy (economy, military, research, stealth, turtle, diplomatic, or optimal). You won&apos;t know their approach until the game unfolds.
             </p>
-            <div className="space-y-2">
-              {AI_OPTIONS.map((ai) => {
-                const selected = selectedAI.has(ai.name);
-                return (
-                  <button
-                    key={ai.name}
-                    type="button"
-                    onClick={() => toggleAI(ai.name)}
-                    className={`w-full text-left border p-3 transition-colors ${
-                      selected
-                        ? "border-yellow-600 bg-yellow-900/15"
-                        : "border-green-800 hover:border-green-600"
-                    }`}
-                  >
-                    <div className="flex justify-between items-center">
-                      <div>
-                        <span className={selected ? "text-yellow-400" : "text-green-400"}>
-                          {selected ? "◉" : "○"} {ai.name}
-                        </span>
-                        <span className="text-green-700 text-xs ml-2">({ai.persona})</span>
-                      </div>
-                    </div>
-                    <p className="text-green-700 text-xs ml-4">{ai.desc}</p>
-                  </button>
-                );
-              })}
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setAiCount((c) => Math.max(0, c - 1))}
+                disabled={aiCount === 0}
+                className="border border-green-700 px-3 py-1 text-green-400 hover:border-green-400 disabled:opacity-30 text-lg leading-none"
+              >−</button>
+              <span className="text-yellow-400 font-bold w-6 text-center text-sm">{aiCount}</span>
+              <button
+                type="button"
+                onClick={() => setAiCount((c) => Math.min(MAX_AI_COUNT, c + 1))}
+                disabled={aiCount >= MAX_AI_COUNT}
+                className="border border-green-700 px-3 py-1 text-green-400 hover:border-green-400 disabled:opacity-30 text-lg leading-none"
+              >+</button>
+              <span className="text-green-700 text-xs">rival{aiCount !== 1 ? "s" : ""} (max {MAX_AI_COUNT})</span>
             </div>
+            {aiCount === 0 && (
+              <p className="text-green-700 text-[10px] mt-2">Solo play — no AI opponents.</p>
+            )}
           </div>
 
           {error && <p className="text-red-500 text-sm">{error}</p>}
@@ -1394,7 +1370,7 @@ export default function Home() {
             disabled={loading || !loginPassword}
             className="w-full border border-yellow-600 py-2 hover:bg-yellow-900 disabled:opacity-40 text-yellow-400 font-bold tracking-wider"
           >
-            {loading ? "CREATING…" : selectedAI.size > 0 ? `CREATE GALAXY (${selectedAI.size} AI)` : "CREATE GALAXY — SOLO"}
+            {loading ? "CREATING…" : aiCount > 0 ? `CREATE GALAXY (${aiCount} AI)` : "CREATE GALAXY — SOLO"}
           </button>
           <button
             type="button"

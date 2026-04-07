@@ -31,6 +31,7 @@ function emptyCtx(over: Partial<StrategyContext> = {}): StrategyContext {
     effectiveness: 100,
     researchPoints: 0,
     unlockedTechIds: [],
+    loans: [],
     activeLoanCount: 0,
     supplyRateStation: 0,
     rivals: [],
@@ -66,7 +67,7 @@ describe("simulation strategies", () => {
   it("credit_leverage requests a loan when under cap and low credits", () => {
     const a = pickSimAction(
       "credit_leverage",
-      emptyCtx({ credits: 20000, activeLoanCount: 0 }),
+      emptyCtx({ credits: 20000, loans: [], activeLoanCount: 0 }),
       5,
     );
     expect(a.action).toBe("bank_loan");

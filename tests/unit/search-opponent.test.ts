@@ -223,6 +223,52 @@ describe("buildSearchStates", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Strategy-aligned rollout: research empire favors research moves in MCTS
+// ---------------------------------------------------------------------------
+
+describe("strategy-aligned rollout (MCTS)", () => {
+  it("research empire uses strategy rollout without crash", () => {
+    const researchEmpire = makeEmpire("researcher", {
+      credits: 80000,
+      netWorth: 0,
+      research: { accumulatedPoints: 20000, unlockedTechIds: [] },
+      planets: [
+        { type: "RESEARCH", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "RESEARCH", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "FOOD", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "FOOD", shortTermProduction: 100, longTermProduction: 100 },
+      ],
+    });
+    const rival = makeEmpire("rival");
+    const { states, playerIdx } = buildSearchStates(researchEmpire, [rival]);
+    const move = mctsSearch(states, playerIdx, {
+      iterations: 20,
+      rolloutDepth: 5,
+      explorationC: Math.SQRT2,
+      branchFactor: 6,
+      seed: 42,
+    });
+    expect(move.action).toBeTruthy();
+  });
+
+  it("supply empire uses strategy rollout without crash", () => {
+    const supplyEmpire = makeEmpire("supplier", {
+      credits: 60000,
+      planets: [
+        { type: "SUPPLY", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "SUPPLY", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "FOOD", shortTermProduction: 100, longTermProduction: 100 },
+      ],
+    });
+    const { states, playerIdx } = buildSearchStates(supplyEmpire, []);
+    const move = mctsSearch(states, playerIdx, {
+      iterations: 20, rolloutDepth: 5, explorationC: Math.SQRT2, branchFactor: 6, seed: 7,
+    });
+    expect(move.action).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Performance smoke test (runs fast due to low iteration count)
 // ---------------------------------------------------------------------------
 

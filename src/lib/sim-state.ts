@@ -918,27 +918,53 @@ export function generateCandidateMoves(
     moves.push({ action: "set_sell_rates", params: { foodSellRate: s.foodSellRate, oreSellRate: 70, petroleumSellRate: s.petroleumSellRate }, label: "Sell ore 70%" });
   }
 
-  // --- Planet buying (highest priority if cheap relative to income) ---
+  // --- Planet buying ---
   const planetCost = (type: PlanetTypeName) =>
     Math.round(PLANET_CONFIG[type].baseCost * (1 + s.netWorth * COST_INFLATION));
 
+  // Maintenance buffer gate: after buying, require N turns of full maintenance in reserve.
+  // Tiers: 0-11 planets = 0 turns buffer (early game, buy freely).
+  //        12+ planets  = 8 turns buffer.
+  // This prevents runaway accumulation that converts all credits to NW while
+  // starving ongoing maintenance.
+  const planetMaintPerTurn = s.planets.length * (MAINT.PLANET_BASE + MAINT.PLANET_PER_TURN * s.turnsPlayed);
+  const bufferTurns = s.planets.length >= 12 ? 8 : 0;
+  const creditBufferNeeded = planetMaintPerTurn * bufferTurns;
+
   const candidatePlanetTypes: PlanetTypeName[] = [];
-  // Early game: food and ore for sustainability
-  if (s.food < 500 || countType(s.planets, "FOOD") < 2) candidatePlanetTypes.push("FOOD");
-  if (s.ore < 400 || countType(s.planets, "ORE") < 2) candidatePlanetTypes.push("ORE");
-  // Government for general/agent cap
-  if (govPlanets < 3 && countType(s.planets, "URBAN") > 2) candidatePlanetTypes.push("GOVERNMENT");
-  // Growth
-  if (countType(s.planets, "URBAN") < 4) candidatePlanetTypes.push("URBAN");
+  // Food: plan for at most 25k population to avoid building an infinite farm.
+  // Population is a *floor* (15k target), not a growth goal.
+  const foodCount = countType(s.planets, "FOOD");
+  const popForFoodPlanning = Math.min(s.population, 25_000);
+  const foodNeededByPop = Math.ceil(
+    (popForFoodPlanning * POP.FOOD_PER_PERSON + s.army.soldiers * MAINT.SOLDIER_FOOD) /
+    Math.max(1, PLANET_CONFIG.FOOD.baseProduction) * 1.5,
+  );
+  if (foodCount < Math.max(2, foodNeededByPop) || s.food < 500) {
+    candidatePlanetTypes.push("FOOD");
+  }
+  // Ore: minimum 2 planets, scale gently with military size
+  const oreCount = countType(s.planets, "ORE");
+  if (s.ore < 400 || oreCount < 2) candidatePlanetTypes.push("ORE");
+  // Government: scale with empire size so generals (and thus attacks) can scale too
+  const govTarget = Math.max(2, Math.ceil(s.planets.length * 0.10));
+  if (govPlanets < govTarget) candidatePlanetTypes.push("GOVERNMENT");
+  // Urban: small base only — enough for pop floor, not max population
+  const urbanCount = countType(s.planets, "URBAN");
+  if (urbanCount < 4) candidatePlanetTypes.push("URBAN");
   // Income
   if (countType(s.planets, "TOURISM") < 2) candidatePlanetTypes.push("TOURISM");
   // Fuel
   if (s.fuel < 200 || countType(s.planets, "PETROLEUM") < 1) candidatePlanetTypes.push("PETROLEUM");
-  // Research
-  if (s.research.unlockedTechIds.length < 3) candidatePlanetTypes.push("RESEARCH");
+  // Research: allow up to 4 research planets so research_rush strategy has room to grow
+  if (countType(s.planets, "RESEARCH") < 4) candidatePlanetTypes.push("RESEARCH");
+  // Supply: free military production; valuable for supply/military strategies
+  if (countType(s.planets, "SUPPLY") < 3) candidatePlanetTypes.push("SUPPLY");
+  // Education: immigration booster for growth-focused empires
+  if (countType(s.planets, "EDUCATION") < 2 && urbanCount >= 3) candidatePlanetTypes.push("EDUCATION");
 
   for (const type of candidatePlanetTypes) {
-    if (s.credits >= planetCost(type)) {
+    if (s.credits >= planetCost(type) + creditBufferNeeded) {
       moves.push({ action: "buy_planet", params: { type }, label: `Buy ${type} planet` });
     }
   }
@@ -1009,19 +1035,235 @@ export function generateCandidateMoves(
 }
 
 // ---------------------------------------------------------------------------
+// Rollout strategy inference + move selection
+// ---------------------------------------------------------------------------
+
+/** Internal rollout strategy label (separate from SimStrategy to avoid circular imports). */
+export type RolloutStrategy = "economy" | "military" | "research" | "supply" | "credit" | "growth" | "balanced";
+
+/**
+ * Infer the empire's current play style from its planet composition and army.
+ * Used by MCTS rollouts to select moves that align with the established strategy
+ * rather than random uniform sampling — critical for deferred-payoff strategies
+ * like research_rush and supply, whose benefits are invisible at short horizons.
+ */
+export function inferRolloutStrategy(s: PureEmpireState): RolloutStrategy {
+  const total = s.planets.length;
+  if (total === 0) return "balanced";
+  const researchCount = countType(s.planets, "RESEARCH");
+  const supplyCount = countType(s.planets, "SUPPLY");
+  const govCount = countType(s.planets, "GOVERNMENT");
+  const urbanCount = countType(s.planets, "URBAN");
+  const foodCount = countType(s.planets, "FOOD");
+  const oreCount = countType(s.planets, "ORE");
+  const milUnits = s.army.soldiers + s.army.fighters * 3 + s.army.lightCruisers * 6 + s.army.heavyCruisers * 15;
+
+  if (researchCount >= 2) return "research";
+  if (supplyCount >= 2) return "supply";
+  // Credit / spy: heavy covert investment relative to gov planets
+  if (govCount >= 2 && s.army.covertAgents > govCount * 100) return "credit";
+  // Military: clearly above-baseline army investment (0.008 ratio or heavy generals)
+  // Starting empire has ~130 units at pop 25k → ratio ≈ 0.0052; threshold 0.01 ignores it.
+  if (milUnits > s.population * 0.01 && s.army.generals >= 3) return "military";
+  // Growth / urban focus
+  if (urbanCount > total * 0.30 && urbanCount >= 3) return "growth";
+  // Economy: resource-planet heavy
+  if (foodCount + oreCount > total * 0.40 && total >= 5) return "economy";
+  return "balanced";
+}
+
+/**
+ * Score a candidate move by how well it fits the rollout strategy.
+ * Higher = more aligned. Small RNG noise added by the caller.
+ */
+function rolloutMoveScore(move: CandidateMove, strategy: RolloutStrategy): number {
+  const a = move.action;
+  const pType = (move.params.type as string | undefined) ?? "";
+  switch (strategy) {
+    case "research":
+      if (a === "discover_tech") return 4.0;
+      if (a === "buy_planet" && pType === "RESEARCH") return 3.5;
+      if (a === "buy_planet" && (pType === "FOOD" || pType === "ORE")) return 2.0;
+      if (a === "buy_planet") return 1.5;
+      if (a === "end_turn") return 0.5;
+      return 1.0;
+    case "supply":
+      if (a === "buy_planet" && pType === "SUPPLY") return 4.0;
+      if (a === "buy_planet") return 2.0;
+      if (a === "end_turn") return 0.8;
+      return 1.0;
+    case "military":
+      if (a === "attack_pirates" || a === "attack_conventional" || a === "attack_guerrilla") return 3.5;
+      if (a === "buy_soldiers" || a === "buy_fighters" || a === "buy_light_cruisers" || a === "buy_heavy_cruisers") return 3.0;
+      if (a === "buy_generals") return 2.5;
+      if (a === "buy_planet" && pType === "GOVERNMENT") return 2.0;
+      if (a === "buy_planet") return 1.0;
+      if (a === "end_turn") return 0.5;
+      return 1.0;
+    case "credit":
+      if (a === "bank_loan") return 3.5;
+      if (a === "buy_bond") return 3.0;
+      if (a === "buy_covert_agents") return 2.5;
+      if (a === "buy_planet" && pType === "GOVERNMENT") return 2.0;
+      if (a === "buy_planet") return 1.5;
+      return 1.0;
+    case "growth":
+      if (a === "buy_planet" && (pType === "URBAN" || pType === "EDUCATION")) return 3.5;
+      if (a === "buy_planet" && pType === "FOOD") return 2.5;
+      if (a === "set_tax_rate") return 2.0; // low tax encourages growth
+      if (a === "buy_planet") return 2.0;
+      if (a === "end_turn") return 0.5;
+      return 1.0;
+    case "economy":
+      if (a === "set_sell_rates") return 3.0;
+      if (a === "buy_planet" && (pType === "FOOD" || pType === "ORE" || pType === "TOURISM")) return 2.5;
+      if (a === "buy_planet" && pType === "URBAN") return 2.0;
+      if (a === "buy_planet") return 1.5;
+      return 1.0;
+    case "balanced":
+    default:
+      // Mild military bias: generals unlock attacks; pirates give free credits + effectiveness
+      if (a === "attack_pirates") return 2.0;
+      if (a === "buy_generals")   return 1.8;
+      if (a === "buy_soldiers" || a === "buy_fighters" || a === "buy_light_cruisers") return 1.4;
+      if (a === "buy_heavy_cruisers") return 1.3;
+      if (a === "attack_conventional" || a === "attack_guerrilla") return 1.6;
+      if (a === "discover_tech")  return 1.2; // tech multiplies military production
+      return 1.0;
+  }
+}
+
+/**
+ * Select a move from `candidates` aligned with the empire's inferred strategy.
+ * Adds small RNG noise so rollouts don't become fully deterministic.
+ */
+export function pickRolloutMove(
+  s: PureEmpireState,
+  candidates: CandidateMove[],
+  rng: () => number,
+): CandidateMove {
+  if (candidates.length === 1) return candidates[0];
+  const strategy = inferRolloutStrategy(s);
+
+  // Over-extension: fewer than 5 turns of planet maintenance in reserve, OR in net deficit.
+  const maintPerTurn = s.planets.length * (MAINT.PLANET_BASE + MAINT.PLANET_PER_TURN * s.turnsPlayed);
+  const netIncome = estimateNetIncomePerTurn(s);
+  const isOverExtended = (maintPerTurn > 0 && s.credits < maintPerTurn * 5) || netIncome < -800;
+
+  // Food pressure: if production falling behind consumption AND below pop floor, prioritise food.
+  // Above the floor, mild pressure only — don't let food crowd out military.
+  const POP_FLOOR = 15_000;
+  const estFoodProd     = countType(s.planets, "FOOD") * PLANET_CONFIG.FOOD.baseProduction;
+  const estFoodConsumed = s.population * POP.FOOD_PER_PERSON + s.army.soldiers * MAINT.SOLDIER_FOOD;
+  const isFoodPressure  = estFoodProd < estFoodConsumed * 1.1;
+  const isBelowPopFloor = s.population < POP_FLOOR;
+
+  let best = candidates[0];
+  let bestScore = -Infinity;
+  for (const c of candidates) {
+    let score = rolloutMoveScore(c, strategy) + rng() * 0.15;
+    if (isOverExtended) {
+      if (c.action === "buy_planet") score -= 2.5;
+      if (c.action === "end_turn")   score += 1.0;
+    }
+    if (isFoodPressure) {
+      const pType = (c.params.type as string | undefined) ?? "";
+      if (c.action === "buy_planet" && pType === "FOOD") {
+        score += isBelowPopFloor ? 3.0 : 1.0; // urgent below floor, mild above
+      } else if (c.action === "buy_planet") {
+        score -= isBelowPopFloor ? 1.5 : 0.3; // strongly defer below floor, barely above
+      }
+    }
+    if (score > bestScore) { bestScore = score; best = c; }
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
 // evalState — multi-objective heuristic scoring
 // ---------------------------------------------------------------------------
+
+/** Number of techs in the full research tree. */
+const TOTAL_TECHS = 22;
+
+/**
+ * Estimate total maintenance cost per turn for scoring purposes.
+ * Planet maintenance grows with turnsPlayed; army adds flat rates.
+ */
+function estimateMaintPerTurn(s: PureEmpireState): number {
+  const planetMaint = s.planets.length * (MAINT.PLANET_BASE + MAINT.PLANET_PER_TURN * s.turnsPlayed);
+  const armyMaint =
+    s.army.soldiers      * MAINT.SOLDIER +
+    s.army.generals      * MAINT.GENERAL +
+    s.army.fighters      * MAINT.FIGHTER +
+    s.army.defenseStations * MAINT.STATION +
+    s.army.lightCruisers * MAINT.LIGHT_CRUISER +
+    s.army.heavyCruisers * MAINT.HEAVY_CRUISER +
+    s.army.carriers      * MAINT.CARRIER;
+  return planetMaint + armyMaint;
+}
+
+/**
+ * Estimate net credits earned per turn from the current state (income minus expenses).
+ * Used by evalState to reward positive cash flow over raw net-worth accumulation.
+ * Intentionally approximate — avoids a full applyTick clone.
+ */
+function estimateNetIncomePerTurn(s: PureEmpireState): number {
+  const { creditsBonus } = getTechBonuses(s.research.unlockedTechIds);
+
+  const populationTax = Math.floor(s.population * s.taxRate * ECON.POPULATION_TAX_FACTOR);
+  const urbanCount  = countType(s.planets, "URBAN");
+  const urbanTax    = Math.floor(urbanCount * ECON.URBAN_TAX_PER_PLANET);
+  const tourismCount   = countType(s.planets, "TOURISM");
+  const tourismIncome  = Math.floor(tourismCount * ECON.TOURISM_BASE_CREDITS);
+
+  // Resource income: approximate with count × baseProduction (avg 100% efficiency)
+  const foodCount  = countType(s.planets, "FOOD");
+  const foodIncome = Math.round(
+    foodCount * PLANET_CONFIG.FOOD.baseProduction
+    * (s.foodSellRate / 100) * ECON.BASE_FOOD_PRICE / ECON.SELL_RATIO_DIVISOR,
+  );
+  const oreCount  = countType(s.planets, "ORE");
+  const oreIncome = Math.round(
+    oreCount * PLANET_CONFIG.ORE.baseProduction
+    * (s.oreSellRate / 100) * ECON.BASE_ORE_PRICE / ECON.SELL_RATIO_DIVISOR,
+  );
+  const petroCount  = countType(s.planets, "PETROLEUM");
+  const petroIncome = Math.round(
+    petroCount * PLANET_CONFIG.PETROLEUM.baseProduction
+    * (s.petroleumSellRate / 100) * ECON.BASE_PETRO_PRICE / ECON.SELL_RATIO_DIVISOR,
+  );
+
+  const totalIncome = Math.round(
+    (populationTax + urbanTax + tourismIncome + foodIncome + oreIncome + petroIncome)
+    * (1 + creditsBonus / 100),
+  );
+
+  return totalIncome - estimateMaintPerTurn(s);
+}
 
 /**
  * Evaluate how well `s` is doing relative to other players.
  * Returns a score in [0, 1] — higher is better.
  *
- * Weights (tunable):
- *  - net worth rank among all players (0.40)
- *  - economy stability (income > expenses, food/ore/fuel positive) (0.25)
- *  - military relative strength (0.20)
- *  - turns remaining buffer (0.10)
- *  - civil status penalty (0.05)
+ * Key insight from NW constants: military units dominate NW.
+ *   Turtle wins with ~177 NW from military; MCTS lost with ~4 NW from military.
+ *   Population (0.0002/person) is far less efficient than military units.
+ *   Planets (2 NW each) and credits (0.000015/cr) are tertiary.
+ *
+ * Population is treated as a *floor constraint*, not a goal: reach 15k and stop
+ * over-investing in food/urban. All surplus credits should go toward military.
+ *
+ * Weights:
+ *  - net worth rank (0.26)             ← primary: captures all NW components
+ *  - military NW absolute (0.16)       ← direct reward for soldiers/fighters/LCs/HCs
+ *  - food security (0.15)             ← predictive: prevents starvation spiral
+ *  - income flow (0.10)               ← sustains credit supply for military purchases
+ *  - military relative strength (0.10) ← positioning vs peers
+ *  - economy stability (0.09)
+ *  - population floor (0.08)          ← floor constraint: reward up to 15k, not beyond
+ *  - maintenance sustainability (0.04)
+ *  - turns remaining buffer (0.02)
  */
 export function evalState(s: PureEmpireState, allStates: PureEmpireState[]): number {
   if (allStates.length === 0) return 0.5;
@@ -1031,33 +1273,73 @@ export function evalState(s: PureEmpireState, allStates: PureEmpireState[]): num
   const rank = sorted.findIndex((x) => x.id === s.id);
   const rankScore = allStates.length > 1 ? (allStates.length - 1 - rank) / (allStates.length - 1) : 0.5;
 
-  // Economy health
-  const govPlanets = countType(s.planets, "GOVERNMENT");
-  const foodPlanets = countType(s.planets, "FOOD");
+  // Military NW: absolute contribution from all unit types.
+  // 120 NW worth of units = full score (turtle reached ~177; this is a strong mid-game target).
+  const milNW =
+    s.army.soldiers        * NETWORTH.SOLDIER +
+    s.army.generals        * NETWORTH.GENERAL +
+    s.army.fighters        * NETWORTH.FIGHTER +
+    s.army.defenseStations * NETWORTH.STATION +
+    s.army.lightCruisers   * NETWORTH.LIGHT_CRUISER +
+    s.army.heavyCruisers   * NETWORTH.HEAVY_CRUISER +
+    s.army.carriers        * NETWORTH.CARRIER;
+  const milNWScore = Math.min(1, milNW / 120);
+
+  // Food security: predicted production vs consumption — catches starvation before it hits.
+  // Ratio ≥ 1.5 (50% surplus) → score 1.0; < 0.8 (deficit) → score 0.
+  const foodPlanets     = countType(s.planets, "FOOD");
+  const estFoodProd     = foodPlanets * PLANET_CONFIG.FOOD.baseProduction;
+  const estFoodConsumed = Math.max(1,
+    s.population * POP.FOOD_PER_PERSON +
+    s.army.soldiers * MAINT.SOLDIER_FOOD +
+    s.army.generals * MAINT.GENERAL_FOOD,
+  );
+  const foodRatio       = estFoodProd / estFoodConsumed;
+  const foodSecureScore = s.food < 0 ? 0 : Math.min(1, Math.max(0, (foodRatio - 0.8) / 0.7));
+
+  // Population floor: reward reaching 15k pop; cap there — more pop does not help eval.
+  // This stops MCTS over-building food/urban when it should be building military.
+  const POP_FLOOR = 15_000;
+  const popFloorScore = Math.min(1, s.population / POP_FLOOR);
+
+  // Economy health (binary checks + credit level)
   const orePlanets = countType(s.planets, "ORE");
-  const foodOk = foodPlanets > 0 && s.food >= 0 ? 1 : 0;
-  const oreOk = (orePlanets > 0 || s.army.fighters === 0) && s.ore >= 0 ? 1 : 0;
-  const fuelOk = s.fuel >= 0 ? 1 : 0;
+  const foodOk   = foodPlanets > 0 && s.food >= 0 ? 1 : 0;
+  const oreOk    = (orePlanets > 0 || s.army.fighters === 0) && s.ore >= 0 ? 1 : 0;
+  const fuelOk   = s.fuel >= 0 ? 1 : 0;
   const creditOk = s.credits > 0 ? Math.min(1, s.credits / 20000) : 0;
   const econScore = (foodOk + oreOk + fuelOk + creditOk) / 4;
 
-  // Military relative strength
-  const myMilStr = conventionalStrength(s.army, false);
-  const maxMilStr = Math.max(1, ...allStates.map((x) => conventionalStrength(x.army, false)));
-  const milScore = myMilStr / maxMilStr;
+  // Maintenance sustainability
+  const totalMaint = estimateMaintPerTurn(s);
+  const turnsOfMaintCovered = (s.credits > 0 && totalMaint > 0) ? s.credits / totalMaint : 0;
+  const sustainScore = Math.min(1, turnsOfMaintCovered / 15);
 
-  // Turns remaining (bonus for having turns left)
+  // Income flow: net credits per turn.
+  // 0 at -3k/turn deficit, 0.5 at break-even, 1.0 at +6k/turn surplus.
+  const netIncome = estimateNetIncomePerTurn(s);
+  const incomeFlowScore = netIncome >= 0
+    ? Math.min(1, 0.5 + netIncome / 12000)
+    : Math.max(0, 0.5 + netIncome / 6000);
+
+  // Military relative strength vs peers
+  const myMilStr  = conventionalStrength(s.army, false);
+  const maxMilStr = Math.max(1, ...allStates.map((x) => conventionalStrength(x.army, false)));
+  const milScore  = myMilStr / maxMilStr;
+
+  // Turns remaining
   const turnScore = s.turnsLeft > 0 ? Math.min(1, s.turnsLeft / START.TURNS) : 0;
 
-  // Civil status (0 = best, 7 = worst)
-  const civilScore = 1 - s.civilStatus / 7;
-
   return (
-    rankScore * 0.40 +
-    econScore * 0.25 +
-    milScore * 0.20 +
-    turnScore * 0.10 +
-    civilScore * 0.05
+    rankScore       * 0.26 +
+    milNWScore      * 0.16 +
+    foodSecureScore * 0.15 +
+    incomeFlowScore * 0.10 +
+    milScore        * 0.10 +
+    econScore       * 0.09 +
+    popFloorScore   * 0.08 +
+    sustainScore    * 0.04 +
+    turnScore       * 0.02
   );
 }
 

@@ -310,12 +310,12 @@ export async function runSessionSimulation(config: SessionSimConfig): Promise<Si
         }
 
         const isSearchStrategy = hp.strategy === "mcts" || hp.strategy === "maxn";
-        const [loanCount, rivals, rivalShapes] = await Promise.all([
-          prisma.loan.count({ where: { empireId: empire.id } }),
+        const [loans, rivals, rivalShapes] = await Promise.all([
+          prisma.loan.findMany({ where: { empireId: empire.id }, select: { id: true, balance: true } }),
           fetchRivals(sessionId, empire.id),
           isSearchStrategy ? fetchRivalShapes(sessionId, empire.id) : Promise.resolve(undefined),
         ]);
-        const ctx = strategyContextFromEmpire(empire, loanCount, rivals);
+        const ctx = strategyContextFromEmpire(empire, loans, rivals);
         const phaseTurn = phaseTurnForStrategy(config.turns, empire.turnsLeft);
         const { action, params } = pickSimAction(
           hp.strategy,
@@ -382,12 +382,12 @@ export async function runSessionSimulation(config: SessionSimConfig): Promise<Si
           }
 
           const isSearchStrategy = hp.strategy === "mcts" || hp.strategy === "maxn";
-          const [loanCount, rivals, rivalShapes] = await Promise.all([
-            prisma.loan.count({ where: { empireId: empire.id } }),
+          const [loans, rivals, rivalShapes] = await Promise.all([
+            prisma.loan.findMany({ where: { empireId: empire.id }, select: { id: true, balance: true } }),
             fetchRivals(sessionId, empire.id),
             isSearchStrategy ? fetchRivalShapes(sessionId, empire.id) : Promise.resolve(undefined),
           ]);
-          const ctx = strategyContextFromEmpire(empire, loanCount, rivals);
+          const ctx = strategyContextFromEmpire(empire, loans, rivals);
           const phaseTurn = phaseTurnForStrategy(config.turns, empire.turnsLeft);
           const { action, params } = pickSimAction(
             hp.strategy,

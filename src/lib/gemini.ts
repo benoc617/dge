@@ -4,6 +4,7 @@ import { targetHasNewEmpireProtection } from "@/lib/empire-protection";
 import * as rng from "@/lib/rng";
 import { empireFromPrisma, makeRng, type PrismaEmpireShape } from "@/lib/sim-state";
 import { searchOpponentMove, buildSearchStates } from "@/lib/search-opponent";
+import { getAvailableTech } from "@/lib/research";
 
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
@@ -87,6 +88,15 @@ Key: Impenetrable defense, then break whoever tries to run away with the galaxy.
 You use Monte Carlo Tree Search to look ahead and choose the statistically strongest action.
 You adapt to every situation without fixed heuristics.
 Key: Tree search, not instinct.`,
+
+  researcher: `You are "The Researcher" - a long-term strategist who wins through technological superiority.
+Strategy: Build research planets early (2-3 minimum). Accumulate research points; unlock the most
+impactful techs in order—income bonuses, population growth, maintenance reductions.
+Buy government planets for covert agent capacity and maintenance savings.
+Keep army light early; invest freed credits back into planets. Attack only pirates (good income) while
+building; only strike rival empires once you have tech advantages that multiply your combat power.
+Once techs compound, your economy will outpace anyone. Then buy heavy military for the endgame.
+Key: Research planets + tech depth → compounding advantages that overwhelm raw economy or brute force.`,
 };
 
 interface EmpireState {
@@ -396,6 +406,19 @@ Respond ONLY with valid JSON:
     return sanitizeAIMove(raw as Record<string, unknown>, ctx, "fallback");
   };
 
+  // Optimal persona always uses the in-house MCTS algorithm — never calls Gemini.
+  if (persona.includes("Optimal") || persona.includes("optimal")) {
+    const out = runFallback();
+    logGetAIMoveTiming({
+      totalMs: performance.now() - tStart,
+      configMs: 0,
+      generateMs: 0,
+      source: "fallback",
+      reason: "optimal_persona",
+    });
+    return attachAiTiming(out, tStart, 0, 0);
+  }
+
   const tConfig0 = performance.now();
   const geminiCfg = await resolveGeminiConfig();
   const configMs = performance.now() - tConfig0;
@@ -466,7 +489,6 @@ function mctsLocalFallback(
   try {
     const seedVal = rng.getSeed();
     const localRng = seedVal !== null ? makeRng(seedVal) : undefined;
-    const iterations = Math.max(20, Math.floor(budgetMs / 0.5)); // rough: ~0.5ms per iteration
     const shape: PrismaEmpireShape = {
       id: "optimal-ai",
       credits: state.credits ?? 0,
@@ -505,15 +527,16 @@ function mctsLocalFallback(
     const move = searchOpponentMove(states, playerIdx, {
       strategy: "mcts",
       mcts: {
-        iterations: Math.min(600, iterations),
-        rolloutDepth: 10,
+        iterations: 999_999, // ignored when timeLimitMs is set
+        timeLimitMs: budgetMs,
+        rolloutDepth: 25,
         seed: localRng ? Math.floor(localRng() * 0xffffffff) : undefined,
       },
     });
     return {
       action: move.action,
       ...move.params,
-      reasoning: `MCTS(${Math.min(600, iterations)} iters): ${move.label}`,
+      reasoning: `MCTS(${budgetMs}ms budget): ${move.label}`,
     };
   } catch {
     return null;
@@ -525,9 +548,11 @@ function localFallback(
   persona: string,
   ctx: AIMoveContext,
 ): { action: string; target?: string; amount?: number; reasoning: string; opType?: number; [key: string]: unknown } {
-  // Optimal persona: use MCTS with a 300ms budget
+  // Optimal persona: MCTS only — no Gemini, no heuristic fallback.
+  // getAIMove() already bypasses Gemini before reaching here; this 45s budget
+  // lets the search run properly as a live AI opponent.
   if (persona.includes("Optimal") || persona.includes("optimal")) {
-    const mctsResult = mctsLocalFallback(state, 300);
+    const mctsResult = mctsLocalFallback(state, 45_000);
     if (mctsResult) return mctsResult as { action: string; reasoning: string; [key: string]: unknown };
   }
 
@@ -558,6 +583,7 @@ function localFallback(
   const isTurtle = persona.includes("Turtle");
   const isEcon = persona.includes("Economist");
   const isSpy = persona.includes("Spy");
+  const isResearcher = persona.includes("Researcher");
 
   if (turnsPlayed === 0 && s.foodSellRate === 0) {
     return { action: "set_sell_rates", foodSellRate: 0, oreSellRate: 60, petroleumSellRate: 80, reasoning: "Set initial sell rates" };
@@ -594,6 +620,9 @@ function localFallback(
 
   if (turnsPlayed < 20) {
     if (foodPlanets < 3 && credits >= PC.FOOD.baseCost) return { action: "buy_planet", type: "FOOD", reasoning: "Need more food early" };
+    if (isResearcher && (pCount["RESEARCH"] ?? 0) < 2 && credits >= PC.RESEARCH.baseCost) {
+      return { action: "buy_planet", type: "RESEARCH", reasoning: "Build research capacity" };
+    }
     if (urbanPlanets < 3 && credits >= PC.URBAN.baseCost) return { action: "buy_planet", type: "URBAN", reasoning: "Grow population capacity" };
     if (orePlanets < 3 && credits >= PC.ORE.baseCost) return { action: "buy_planet", type: "ORE", reasoning: "Need ore for units" };
     if (govPlanets < 2 && credits >= PC.GOVERNMENT.baseCost) return { action: "buy_planet", type: "GOVERNMENT", reasoning: "Need government for generals" };
@@ -647,6 +676,43 @@ function localFallback(
     if (foodPlanets < totalPlanets * 0.25 && credits >= PC.FOOD.baseCost) return { action: "buy_planet", type: "FOOD", reasoning: "Secure food supply" };
     if (credits >= PC.ORE.baseCost) return { action: "buy_planet", type: "ORE", reasoning: "Feed the military machine" };
     return { action: "end_turn", reasoning: "Holding steady" };
+  }
+
+  if (isResearcher) {
+    const researchPlanets = pCount["RESEARCH"] ?? 0;
+    const resPoints = state.research?.accumulatedPoints ?? 0;
+    // Always keep growing research infrastructure
+    if (researchPlanets < 3 && credits >= PC.RESEARCH.baseCost) {
+      return { action: "buy_planet", type: "RESEARCH", reasoning: "Expand research network" };
+    }
+    // Unlock techs ASAP when affordable
+    if (resPoints > 0) {
+      const avail = getAvailableTech(state.research?.unlockedTechIds ?? []);
+      const affordable = avail.filter((t) => t.cost <= resPoints);
+      if (affordable.length > 0) {
+        const pick = affordable.reduce((a, b) => a.cost < b.cost ? a : b);
+        return { action: "discover_tech", techId: pick.id, reasoning: `Research ${pick.id} for tech advantage` };
+      }
+    }
+    if (govPlanets < 2 && credits >= PC.GOVERNMENT.baseCost) {
+      return { action: "buy_planet", type: "GOVERNMENT", reasoning: "Maintenance savings + agent capacity" };
+    }
+    if (foodPlanets < 3 && credits >= PC.FOOD.baseCost) {
+      return { action: "buy_planet", type: "FOOD", reasoning: "Feed the empire" };
+    }
+    // Light pirate raids for income once army is minimal
+    if (army && (army.generals ?? 0) >= 1 && rng.random() < 0.18) {
+      return { action: "attack_pirates", reasoning: "Pirate income funding research" };
+    }
+    // Keep minimal soldiers for defense
+    if (army && army.soldiers < 100 && credits >= UC.SOLDIER * 20) {
+      return { action: "buy_soldiers", amount: 20, reasoning: "Minimal defense" };
+    }
+    // Buy more research planets if budget allows
+    if (credits >= PC.RESEARCH.baseCost) {
+      return { action: "buy_planet", type: "RESEARCH", reasoning: "More research output" };
+    }
+    return { action: "end_turn", reasoning: "Accumulating research points" };
   }
 
   if (isSpy) {

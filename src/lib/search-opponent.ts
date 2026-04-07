@@ -28,6 +28,7 @@ import {
   evalState,
   makeRng,
   cloneEmpire,
+  pickRolloutMove,
 } from "./sim-state";
 import type { ActionType } from "./game-engine";
 
@@ -36,8 +37,10 @@ import type { ActionType } from "./game-engine";
 // ---------------------------------------------------------------------------
 
 export interface MCTSConfig {
-  /** Number of MCTS rollout iterations (default 800). */
+  /** Number of MCTS rollout iterations (default 800). Ignored when timeLimitMs is set. */
   iterations: number;
+  /** Wall-clock time budget in ms. When set, runs until elapsed instead of fixed iterations. */
+  timeLimitMs?: number;
   /** Turns to simulate during each rollout (default 25 = ~5 days). */
   rolloutDepth: number;
   /** UCB1 exploration constant (default sqrt(2) ≈ 1.41). */
@@ -50,7 +53,7 @@ export interface MCTSConfig {
 
 export const DEFAULT_MCTS_CONFIG: MCTSConfig = {
   iterations: 800,
-  rolloutDepth: 25,
+  rolloutDepth: 30,
   explorationC: Math.SQRT2,
   branchFactor: 12,
   seed: null,
@@ -126,9 +129,10 @@ function rollout(
     // Apply tick
     curStates[curIdx] = applyTick(s, rng, n, true);
 
-    // Pick a random candidate move (cheap rollout policy)
-    const candidates = generateCandidateMoves(curStates[curIdx], rivals, 6);
-    const pick = candidates[Math.floor(rng() * candidates.length)];
+    // Pick a strategy-aligned move (biased toward inferred play style; much better
+    // than uniform random for deferred-payoff strategies like research/supply).
+    const candidates = generateCandidateMoves(curStates[curIdx], rivals, 8);
+    const pick = pickRolloutMove(curStates[curIdx], candidates, rng);
 
     const result = applyAction(curStates[curIdx], pick.action, pick.params, rivals, rng);
     curStates[curIdx] = result.state;
@@ -182,7 +186,8 @@ export function mctsSearch(
     currentPlayerIdx: playerIdx,
   };
 
-  for (let iter = 0; iter < cfg.iterations; iter++) {
+  const deadline = cfg.timeLimitMs != null ? Date.now() + cfg.timeLimitMs : null;
+  for (let iter = 0; deadline !== null ? Date.now() < deadline : iter < cfg.iterations; iter++) {
     // 1. Selection
     let node = root;
     while (node.untriedMoves.length === 0 && node.children.length > 0) {

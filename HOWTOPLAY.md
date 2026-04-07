@@ -44,17 +44,9 @@ Hosts can open **`/admin`** (link on the login screen) and sign in with server-c
 
 ### AI Opponents
 
-When creating a galaxy, you can select from 5 rival AI commanders:
+When creating a galaxy you can add **0–5 AI rivals** using the **−/+** buttons on the Create Galaxy screen. Each AI receives a randomly selected commander name and a **secretly assigned strategy** chosen from: Economy, Military, Research, Stealth, Turtle, Diplomatic, or Optimal (MCTS tree-search). You won’t know which strategy any given AI uses until their play style reveals itself — part of the challenge is figuring them out.
 
-| AI Commander | Strategy |
-|---|---|
-| Admiral Koss | Economy-focused banker — avoids combat, maximizes wealth |
-| Warlord Vrex | Military-first — rushes soldiers, attacks frequently |
-| Shadow Nyx | Covert specialist — destabilizes targets before striking |
-| Ambassador Sol | Diplomat — builds alliances, peaceful expansion |
-| Fortress Prime | Defensive turtle — impenetrable defense, counter-attacks only |
-
-Select any combination (or none for solo play). AI opponents take their turns automatically after you act — you don't need to trigger them manually. If an AI’s chosen action is invalid (not enough credits, protected target, etc.), it **skips** that turn—same fairness as a failed command followed by **Skip Turn**—so turn order stays steady.
+AI opponents take their turns automatically after you act — you don’t need to trigger them manually. If an AI’s chosen action is invalid (not enough credits, protected target, etc.), it **skips** that turn—same fairness as a failed command followed by **Skip Turn**—so turn order stays steady.
 
 ### Turn Order
 

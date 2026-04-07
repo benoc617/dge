@@ -143,6 +143,9 @@ export interface StrategyContext {
   effectiveness: number;
   researchPoints: number;
   unlockedTechIds: string[];
+  /** All active loans with IDs — needed to call bank_repay. */
+  loans: { id: string; balance: number }[];
+  /** Convenience count derived from loans.length. */
   activeLoanCount: number;
   /** Current station production allocation (0-100). 0 means supply rates not configured yet. */
   supplyRateStation: number;
@@ -152,7 +155,7 @@ export interface StrategyContext {
 
 export function strategyContextFromEmpire(
   empire: EmpireForStrategySim,
-  activeLoanCount: number,
+  loans: { id: string; balance: number }[],
   rivals: { name: string; netWorth: number; isProtected: boolean; credits: number }[] = [],
 ): StrategyContext {
   const army = empire.army;
@@ -191,22 +194,23 @@ export function strategyContextFromEmpire(
     effectiveness: army.effectiveness,
     researchPoints: empire.research?.accumulatedPoints ?? 0,
     unlockedTechIds: empire.research?.unlockedTechIds ?? [],
-    activeLoanCount,
+    loans,
+    activeLoanCount: loans.length,
     supplyRateStation: empire.supplyRates?.rateStation ?? 0,
     rivals,
   };
 }
 
 export async function buildStrategyContextForEmpire(empireId: string): Promise<StrategyContext | null> {
-  const [empire, activeLoanCount] = await Promise.all([
+  const [empire, loans] = await Promise.all([
     prisma.empire.findUnique({
       where: { id: empireId },
       include: { planets: true, army: true, research: true, supplyRates: true },
     }),
-    prisma.loan.count({ where: { empireId } }),
+    prisma.loan.findMany({ where: { empireId }, select: { id: true, balance: true } }),
   ]);
   if (!empire?.army) return null;
-  return strategyContextFromEmpire(empire, activeLoanCount);
+  return strategyContextFromEmpire(empire, loans);
 }
 
 function countType(ctx: StrategyContext, type: string): number {
@@ -261,7 +265,7 @@ export function pickSimAction(
     const { states, playerIdx } = buildSearchStates(selfState, rivalStates);
     const move = searchOpponentMove(states, playerIdx, {
       strategy,
-      mcts: { seed: rng.getSeed() ?? undefined },
+      mcts: { timeLimitMs: 200, seed: rng.getSeed() ?? undefined },
       maxn: { seed: rng.getSeed() ?? undefined },
     });
     return { action: move.action, params: move.params };
@@ -304,35 +308,60 @@ function balancedStrategy(ctx: StrategyContext, turn: number): { action: ActionT
 }
 
 function economyStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
-  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 60, petroleumSellRate: 60 } };
+  // Phase 0: set sell rates and low tax on turns 0-1
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 65, petroleumSellRate: 65 } };
+  if (turn === 1 && ctx.taxRate > 22) return { action: "set_tax_rate", params: { rate: 22 } };
 
-  // Prioritize income planets, lower tax for pop growth
-  if (turn === 1 && ctx.taxRate > 20) return { action: "set_tax_rate", params: { rate: 20 } };
-  if (countType(ctx, "URBAN") < 5 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
-  if (countType(ctx, "ORE") < 5 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
-  if (countType(ctx, "TOURISM") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
-  if (countType(ctx, "FOOD") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
-  if (countType(ctx, "EDUCATION") < 2 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "EDUCATION" } };
-  if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
-
-  // Buy a small covert cadre to run hostage operations against wealthy rivals
   const govPlanets = countType(ctx, "GOVERNMENT");
-  if (govPlanets >= 1 && ctx.covertAgents < 3 && ctx.credits >= 6000) {
-    return { action: "buy_covert_agents", params: { amount: 3 } };
+
+  // Phase 1 (turns 2-20): build income foundation + unlock military
+  // Government first — needed for generals which unlock pirate raids
+  if (govPlanets < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
+  // Ore + food for resource income and sustainability
+  if (countType(ctx, "ORE")  < 4 && ctx.credits >= 11000) return { action: "buy_planet", params: { type: "ORE" } };
+  if (countType(ctx, "FOOD") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
+  // Petroleum: needed to fuel fighters/LCs without ore drain
+  if (countType(ctx, "PETROLEUM") < 1 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "PETROLEUM" } };
+  // Urban for population tax and housing
+  if (countType(ctx, "URBAN") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+  // Tourism: pure credit income, no maintenance weight
+  if (countType(ctx, "TOURISM") < 3 && ctx.credits >= 15000) return { action: "buy_planet", params: { type: "TOURISM" } };
+
+  // Generals: unlock attacks as soon as gov planet exists
+  if (govPlanets >= 1 && ctx.generals < govPlanets * 4 && ctx.credits >= 3120) {
+    return { action: "buy_generals", params: { amount: Math.min(4, govPlanets * 4 - ctx.generals) } };
   }
 
-  // Take hostages from richest unprotected rival (op 6 = steals 10% of their credits)
-  if (turn >= 16 && ctx.covertAgents > 0 && ctx.covertPoints >= 1) {
-    const richTarget = ctx.rivals
-      .filter((r) => !r.isProtected)
-      .sort((a, b) => b.credits - a.credits)[0];
-    if (richTarget) {
-      return { action: "covert_op", params: { target: richTarget.name, opType: 6 } };
-    }
+  // Sustainability floor: estimate ~2500 credits/turn planet maintenance; require 6 turns of buffer
+  // before spending on military so planet collapse can't happen from a single purchase chain.
+  const maintFloor = ctx.totalPlanets * 2500 + 30000;
+
+  // Phase 2 (turn 18+): military buildup — only when credit buffer covers maintenance
+  if (turn >= 18 && ctx.credits >= maintFloor) {
+    if (ctx.soldiers   < 200  && ctx.credits >= 5600)  return { action: "buy_soldiers",      params: { amount: 20 } };
+    if (ctx.fighters   < 30   && ctx.credits >= 3800)  return { action: "buy_fighters",      params: { amount: 10 } };
+    if (ctx.lightCruisers < 20 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
   }
 
-  if (ctx.lightCruisers < 15 && ctx.credits >= 9500 && turn > 40) return { action: "buy_light_cruisers", params: { amount: 10 } };
-  if (turn > 70 && ctx.soldiers > 100) return { action: "attack_pirates", params: {} };
+  // Pirate raids for supplemental income + effectiveness — start as soon as general + soldiers ready
+  if (ctx.generals >= 1 && ctx.soldiers > 80 && turn >= 20) {
+    return { action: "attack_pirates", params: {} };
+  }
+
+  // Phase 3 (turn 45+): aggressive military scaling for NW compounding
+  if (turn >= 45 && ctx.credits >= maintFloor) {
+    if (ctx.soldiers      < 800  && ctx.credits >= 11200)  return { action: "buy_soldiers",       params: { amount: 40 } };
+    if (ctx.fighters      < 80   && ctx.credits >= 7600)   return { action: "buy_fighters",       params: { amount: 20 } };
+    if (ctx.lightCruisers < 60   && ctx.credits >= 9500)   return { action: "buy_light_cruisers", params: { amount: 10 } };
+    if (ctx.heavyCruisers < 20   && ctx.credits >= 19000)  return { action: "buy_heavy_cruisers", params: { amount: 10 } };
+    // Keep expanding income base for ongoing military purchases
+    if (countType(ctx, "ORE")     < 7  && ctx.credits >= 11000) return { action: "buy_planet", params: { type: "ORE" } };
+    if (countType(ctx, "TOURISM") < 6  && ctx.credits >= 15000) return { action: "buy_planet", params: { type: "TOURISM" } };
+    if (countType(ctx, "URBAN")   < 7  && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+    // Pirate raids whenever not buying
+    if (ctx.generals >= 1 && ctx.soldiers > 200) return { action: "attack_pirates", params: {} };
+  }
+
   return { action: "end_turn", params: {} };
 }
 
@@ -498,37 +527,68 @@ function researchStrategy(ctx: StrategyContext, turn: number): { action: ActionT
 }
 
 function creditLeverageStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
-  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 52, petroleumSellRate: 52 } };
+  // Phase 0: sell rates + tax
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 60, petroleumSellRate: 60 } };
   if (turn === 1 && ctx.taxRate > 22) return { action: "set_tax_rate", params: { rate: 22 } };
-  // Take loans early to front-load planet purchases; interest is low enough to be worth it
-  if (ctx.activeLoanCount < 3 && ctx.credits < 130000 && turn >= 2 && turn < 28) {
+
+  const govPlanets = countType(ctx, "GOVERNMENT");
+
+  // PRIORITY: repay outstanding loans before they compound into a death spiral.
+  // 25% interest/turn is brutal — partial repayment is fine (engine clamps to credits).
+  // Keep a 50k operating buffer; funnel everything else at the highest-balance loan.
+  if (ctx.loans.length > 0 && ctx.credits > 50000) {
+    const worstLoan = ctx.loans.reduce((a, b) => (a.balance >= b.balance ? a : b));
+    return { action: "bank_repay", params: { loanId: worstLoan.id } };
+  }
+
+  // Phase 1 (turns 2-10): single bootstrap loan when broke and no active debt.
+  // Take it only once — repayment logic above will clear it within a turn or two.
+  if (ctx.loans.length === 0 && ctx.credits < 30000 && turn >= 2 && turn <= 10) {
     return { action: "bank_loan", params: { amount: 100000 } };
   }
 
-  // Core planet foundation (funded by loans)
-  if (countType(ctx, "URBAN") < 5 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
-  if (countType(ctx, "ORE") < 5 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
-  if (countType(ctx, "TOURISM") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
-  if (countType(ctx, "FOOD") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
-  if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
-  // Petroleum: 1 planet covers fuel for LCs and fighters indefinitely
-  if (countType(ctx, "PETROLEUM") < 1 && ctx.credits >= 20000) return { action: "buy_planet", params: { type: "PETROLEUM" } };
+  // Core income foundation — spend loan capital on high-yield planets quickly
+  if (govPlanets < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
+  if (countType(ctx, "ORE")        < 4 && ctx.credits >= 11000) return { action: "buy_planet", params: { type: "ORE" } };
+  if (countType(ctx, "FOOD")       < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
+  if (countType(ctx, "PETROLEUM")  < 1 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "PETROLEUM" } };
+  if (countType(ctx, "URBAN")      < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+  if (countType(ctx, "TOURISM")    < 3 && ctx.credits >= 15000) return { action: "buy_planet", params: { type: "TOURISM" } };
 
-  // First military wave (once loans start clearing)
-  if (ctx.lightCruisers < 20 && ctx.credits >= 9500 && turn > 35) return { action: "buy_light_cruisers", params: { amount: 10 } };
-  if (ctx.soldiers < 200 && ctx.credits >= 5600 && turn > 35) return { action: "buy_soldiers", params: { amount: 20 } };
-
-  // Late-game: reinvest surplus into more income planets and military for ongoing NW compounding
-  if (turn > 50 && ctx.activeLoanCount === 0) {
-    if (countType(ctx, "ORE")     < 8 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
-    if (countType(ctx, "TOURISM") < 5 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
-    if (countType(ctx, "URBAN")   < 8 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
-    if (ctx.lightCruisers < 50 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
-    if (ctx.soldiers < 600 && ctx.credits >= 11200) return { action: "buy_soldiers", params: { amount: 40 } };
-    if (ctx.fighters < 40 && ctx.credits >= 7600) return { action: "buy_fighters", params: { amount: 20 } };
+  // Generals: unlock pirate income ASAP — check for debt-free window
+  if (ctx.loans.length === 0 && govPlanets >= 1 && ctx.generals < govPlanets * 4 && ctx.credits >= 3120) {
+    return { action: "buy_generals", params: { amount: Math.min(4, govPlanets * 4 - ctx.generals) } };
   }
 
-  if (turn > 40 && ctx.soldiers > 100) return { action: "attack_pirates", params: {} };
+  // Bonds: invest surplus when debt-free — +10% return in 30 turns beats cash-idle
+  if (ctx.loans.length === 0 && ctx.credits >= 150000 && turn >= 20 && turn < 60) {
+    return { action: "buy_bond", params: { amount: 50000 } };
+  }
+
+  // Phase 2 (turn 22+): military NW buildup — only when debt-free and credit buffer healthy
+  if (turn >= 22 && ctx.loans.length === 0 && ctx.credits >= 80000) {
+    if (ctx.soldiers      < 200 && ctx.credits >= 5600)  return { action: "buy_soldiers",       params: { amount: 20 } };
+    if (ctx.fighters      < 25  && ctx.credits >= 3800)  return { action: "buy_fighters",       params: { amount: 10 } };
+    if (ctx.lightCruisers < 20  && ctx.credits >= 9500)  return { action: "buy_light_cruisers", params: { amount: 10 } };
+  }
+
+  // Pirate raids once military is ready — key income supplement
+  if (ctx.loans.length === 0 && ctx.generals >= 1 && ctx.soldiers > 100 && turn >= 25) {
+    return { action: "attack_pirates", params: {} };
+  }
+
+  // Phase 3 (turn 45+): aggressive scaling — income base is stable
+  if (turn >= 45 && ctx.loans.length === 0 && ctx.credits >= 100000) {
+    if (ctx.soldiers      < 1000 && ctx.credits >= 11200)  return { action: "buy_soldiers",       params: { amount: 40 } };
+    if (ctx.fighters      < 100  && ctx.credits >= 7600)   return { action: "buy_fighters",       params: { amount: 20 } };
+    if (ctx.lightCruisers < 80   && ctx.credits >= 9500)   return { action: "buy_light_cruisers", params: { amount: 10 } };
+    if (ctx.heavyCruisers < 20   && ctx.credits >= 19000)  return { action: "buy_heavy_cruisers", params: { amount: 10 } };
+    if (countType(ctx, "ORE")     < 7 && ctx.credits >= 11000) return { action: "buy_planet", params: { type: "ORE" } };
+    if (countType(ctx, "TOURISM") < 6 && ctx.credits >= 15000) return { action: "buy_planet", params: { type: "TOURISM" } };
+    if (countType(ctx, "URBAN")   < 7 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+    if (ctx.generals >= 1 && ctx.soldiers > 200) return { action: "attack_pirates", params: {} };
+  }
+
   return { action: "end_turn", params: {} };
 }
 
@@ -655,18 +715,18 @@ export async function runSimulation(config: SimConfig): Promise<SimResult> {
   for (let turn = 0; turn < config.turns; turn++) {
     for (const p of playerIds) {
       // Fetch current state for strategy decisions
-      const [empire, activeLoanCount] = await Promise.all([
+      const [empire, loans] = await Promise.all([
         prisma.empire.findUnique({
           where: { id: p.id },
           include: { planets: true, army: true, research: true, supplyRates: true },
         }),
-        prisma.loan.count({ where: { empireId: p.id } }),
+        prisma.loan.findMany({ where: { empireId: p.id }, select: { id: true, balance: true } }),
       ]);
 
       if (!empire || !empire.army || empire.turnsLeft < 1) continue;
       if (empire.population < 10) continue;
 
-      const ctx = strategyContextFromEmpire(empire, activeLoanCount);
+      const ctx = strategyContextFromEmpire(empire, loans);
 
       const { action, params } = pickSimAction(
         p.strategy,

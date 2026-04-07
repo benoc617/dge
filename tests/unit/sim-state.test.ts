@@ -6,8 +6,11 @@ import {
   evalState,
   makeRng,
   cloneEmpire,
+  inferRolloutStrategy,
+  pickRolloutMove,
   type PureEmpireState,
   type RivalView,
+  type CandidateMove,
 } from "@/lib/sim-state";
 import { START, UNIT_COST } from "@/lib/game-constants";
 
@@ -359,5 +362,110 @@ describe("cloneEmpire", () => {
     expect(orig.credits).toBe(START.CREDITS);
     expect(orig.planets.length).toBe(7);
     expect(orig.research.unlockedTechIds.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// inferRolloutStrategy
+// ---------------------------------------------------------------------------
+
+describe("inferRolloutStrategy", () => {
+  it("returns balanced for a mixed-planet empire", () => {
+    const s = makeEmpire({
+      planets: [
+        { type: "FOOD", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "ORE", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "URBAN", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "TOURISM", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "PETROLEUM", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "GOVERNMENT", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "ANTI_POLLUTION", shortTermProduction: 100, longTermProduction: 100 },
+      ],
+    });
+    expect(inferRolloutStrategy(s)).toBe("balanced");
+  });
+
+  it("detects research strategy when 2+ research planets", () => {
+    const s = makeEmpire({
+      planets: [
+        { type: "RESEARCH", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "RESEARCH", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "FOOD", shortTermProduction: 100, longTermProduction: 100 },
+      ],
+    });
+    expect(inferRolloutStrategy(s)).toBe("research");
+  });
+
+  it("detects supply strategy when 2+ supply planets", () => {
+    const s = makeEmpire({
+      planets: [
+        { type: "SUPPLY", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "SUPPLY", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "FOOD", shortTermProduction: 100, longTermProduction: 100 },
+      ],
+    });
+    expect(inferRolloutStrategy(s)).toBe("supply");
+  });
+
+  it("detects military strategy for army-heavy empire", () => {
+    const s = makeEmpire({
+      population: 10000,
+      army: {
+        ...makeEmpire().army,
+        soldiers: 800,
+        fighters: 100,
+        generals: 4,  // 3+ generals signals intentional military investment
+      },
+    });
+    expect(inferRolloutStrategy(s)).toBe("military");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pickRolloutMove
+// ---------------------------------------------------------------------------
+
+describe("pickRolloutMove", () => {
+  const rng = makeRng(7);
+
+  it("always returns a candidate from the list", () => {
+    const s = makeEmpire();
+    const candidates: CandidateMove[] = generateCandidateMoves(s, []);
+    const pick = pickRolloutMove(s, candidates, rng);
+    expect(candidates).toContainEqual(pick);
+  });
+
+  it("returns the only candidate when list has one item", () => {
+    const s = makeEmpire();
+    const only: CandidateMove = { action: "end_turn", params: {}, label: "Skip" };
+    expect(pickRolloutMove(s, [only], rng)).toBe(only);
+  });
+
+  it("research empire prefers research planet and discover_tech moves", () => {
+    const s = makeEmpire({
+      credits: 100000,
+      netWorth: 0,
+      research: { accumulatedPoints: 50000, unlockedTechIds: [] },
+      planets: [
+        { type: "RESEARCH", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "RESEARCH", shortTermProduction: 100, longTermProduction: 100 },
+        { type: "FOOD", shortTermProduction: 100, longTermProduction: 100 },
+      ],
+    });
+    const candidates: CandidateMove[] = [
+      { action: "buy_soldiers", params: { amount: 10 }, label: "Soldiers" },
+      { action: "discover_tech", params: { techId: "basic_farming" }, label: "Tech" },
+      { action: "buy_planet", params: { type: "RESEARCH" }, label: "Research planet" },
+      { action: "end_turn", params: {}, label: "Skip" },
+    ];
+    // Run many times; research-aligned moves should dominate
+    const counts: Record<string, number> = {};
+    const deterministicRng = makeRng(42);
+    for (let i = 0; i < 50; i++) {
+      const pick = pickRolloutMove(s, candidates, deterministicRng);
+      counts[pick.action] = (counts[pick.action] ?? 0) + 1;
+    }
+    const techAndResearch = (counts["discover_tech"] ?? 0) + (counts["buy_planet"] ?? 0);
+    expect(techAndResearch).toBeGreaterThan(counts["buy_soldiers"] ?? 0);
   });
 });
