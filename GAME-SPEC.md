@@ -733,44 +733,44 @@ Effectiveness: +15 on win, -5 on loss.
 ### Agriculture
 | ID | Name | Cost | Prereqs | Effect |
 |----|------|------|---------|--------|
-| agri_1 | Improved Hydroponics | 500K | — | +10% food production (permanent) |
-| agri_2 | Drought Resistance | 1.2M | agri_1 | +5% food production (permanent) |
-| agri_3 | Bumper Harvest Protocol | 800K | agri_1 | +25% food production (15 turns) |
+| agri_1 | Improved Hydroponics | 8,000 | — | +10% food production (permanent) |
+| agri_2 | Drought Resistance | 25,000 | agri_1 | +5% food production (permanent) |
+| agri_3 | Bumper Harvest Protocol | 15,000 | agri_1 | +25% food production (15 turns) |
 
 ### Industry
 | ID | Name | Cost | Prereqs | Effect |
 |----|------|------|---------|--------|
-| ind_1 | Advanced Mining | 600K | — | +10% ore production (permanent) |
-| ind_2 | Refined Petroleum | 900K | ind_1 | +10% petroleum production (permanent) |
-| ind_3 | Efficient Maintenance | 1.5M | ind_1 | -15% planet maintenance (permanent) |
-| ind_4 | Tourism Boom | 700K | — | +100% tourism income (10 turns) |
+| ind_1 | Advanced Mining | 10,000 | — | +10% ore production (permanent) |
+| ind_2 | Refined Petroleum | 18,000 | ind_1 | +10% petroleum production (permanent) |
+| ind_3 | Efficient Maintenance | 35,000 | ind_1 | -15% planet maintenance (permanent) |
+| ind_4 | Tourism Boom | 12,000 | — | +100% tourism income (10 turns) |
 
 ### Military
 | ID | Name | Cost | Prereqs | Effect |
 |----|------|------|---------|--------|
-| mil_soldiers_1 | Soldier Training I | 1M | — | Soldiers → Tier 1 |
-| mil_soldiers_2 | Soldier Training II | 3M | mil_soldiers_1 | Soldiers → Tier 2 |
-| mil_fighters_1 | Fighter Upgrades I | 1.2M | — | Fighters → Tier 1 |
-| mil_fighters_2 | Fighter Upgrades II | 3.5M | mil_fighters_1 | Fighters → Tier 2 |
-| mil_stations_1 | Station Fortification I | 1.5M | — | Stations → Tier 1 |
-| mil_stations_2 | Station Fortification II | 4M | mil_stations_1 | Stations → Tier 2 |
-| mil_hc_1 | Heavy Cruiser Refit I | 2M | — | Heavy Cruisers → Tier 1 |
-| mil_hc_2 | Heavy Cruiser Refit II | 5M | mil_hc_1 | Heavy Cruisers → Tier 2 |
-| mil_cmd_1 | Command Ship Upgrade I | 3M | mil_hc_1 | 2× command ship heavy cruiser bonus |
+| mil_soldiers_1 | Soldier Training I | 20,000 | — | Soldiers → Tier 1 |
+| mil_soldiers_2 | Soldier Training II | 60,000 | mil_soldiers_1 | Soldiers → Tier 2 |
+| mil_fighters_1 | Fighter Upgrades I | 25,000 | — | Fighters → Tier 1 |
+| mil_fighters_2 | Fighter Upgrades II | 75,000 | mil_fighters_1 | Fighters → Tier 2 |
+| mil_stations_1 | Station Fortification I | 30,000 | — | Stations → Tier 1 |
+| mil_stations_2 | Station Fortification II | 90,000 | mil_stations_1 | Stations → Tier 2 |
+| mil_hc_1 | Heavy Cruiser Refit I | 45,000 | — | Heavy Cruisers → Tier 1 |
+| mil_hc_2 | Heavy Cruiser Refit II | 120,000 | mil_hc_1 | Heavy Cruisers → Tier 2 |
+| mil_cmd_1 | Command Ship Upgrade I | 70,000 | mil_hc_1 | 2× command ship heavy cruiser bonus |
 
 ### Society
 | ID | Name | Cost | Prereqs | Effect |
 |----|------|------|---------|--------|
-| soc_1 | Population Initiative | 500K | — | +10% population growth (permanent) |
-| soc_2 | Civil Stability Program | 1M | soc_1 | -20% civil unrest effects (permanent) |
-| soc_3 | Economic Stimulus | 800K | — | +15% credits income (20 turns) |
+| soc_1 | Population Initiative | 8,000 | — | +10% population growth (permanent) |
+| soc_2 | Civil Stability Program | 20,000 | soc_1 | -20% civil unrest effects (permanent) |
+| soc_3 | Economic Stimulus | 15,000 | — | +15% credits income (20 turns) |
 
 ### Deep Space
 | ID | Name | Cost | Prereqs | Effect |
 |----|------|------|---------|--------|
-| ds_lc_1 | Light Cruiser Upgrades I | 2M | — | Light Cruisers → Tier 1 |
-| ds_lc_2 | Light Cruiser Upgrades II | 5M | ds_lc_1 | Light Cruisers → Tier 2 |
-| ds_research | Research Accelerator | 1.5M | — | +25% research speed (permanent) |
+| ds_lc_1 | Light Cruiser Upgrades I | 45,000 | — | Light Cruisers → Tier 1 |
+| ds_lc_2 | Light Cruiser Upgrades II | 120,000 | ds_lc_1 | Light Cruisers → Tier 2 |
+| ds_research | Research Accelerator | 35,000 | — | +25% research speed (permanent) |
 
 ---
 
@@ -871,11 +871,13 @@ New empires begin with:
 - `playerId`, `action`, `details` (JSON), timestamp
 - `details` typically includes `params`, `actionMsg`, and either `report` (full tick/economy snapshot for that action) **or** `tickReportDeferred: true` when the income tick already ran in `POST /api/game/tick` / `runAndPersistTick` — in that case the economy is not duplicated in the log row (avoids all-zero “fake” reports).
 - For **AI** actions, `details` may include `llmSource`: `gemini` | `fallback` and `aiReasoning` (string) — same semantics as `GameEvent` `ai_turn` `details.llmSource`.
+- **`aiTiming`** (optional, JSON): **`getAIMove`** — `{ configMs, generateMs, totalMs }` (`generateMs` is the Gemini `generateContent` call when `llmSource` is `gemini`; **0** for fallback). **`runOneAI`** — `{ contextMs, getAIMoveMs }` only (DB `Player` + rival query; wall time for `getAIMove`). Full **execute** / **total** wall time for the AI turn is **`GameEvent.details.aiTiming.runOneAI`** (below), not duplicated on `TurnLog` because the turn log row is written before `processAction` finishes.
 
 ### GameEvent
 - `gameSessionId` (optional) — when set, the event belongs to that session (combat, diplomacy, lottery, **`ai_turn`** with `details.llmSource` = `gemini` | `fallback`). Older rows may have null (global / legacy).
 - `type`, `message`, `details` (JSON), timestamp
 - **`ai_turn` messages** are prefixed `[gemini]` or `[fallback]` so logs show whether the Gemini API produced the move or rule-based `localFallback` ran (API missing, invalid JSON, or invalid action name).
+- **`ai_turn` `details.aiTiming`** (sequential `runOneAI` only): full breakdown — **`getAIMove`** (same as above) plus **`runOneAI.executeMs`** (`processAction` / `processAiMoveOrSkip` body) and **`runOneAI.totalMs`** (context + `getAIMove` + execute). Use this for latency analysis or exports; door-game / `/api/ai/turn` only persist **`getAIMove`** on `TurnLog`.
 
 ### HighScore
 - `playerName`, `netWorth`, `population`, `planets`, `turnsPlayed`, `rank`, `totalPlayers`, `finishedAt`

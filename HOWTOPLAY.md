@@ -221,11 +221,13 @@ Your agents can be detected and killed. More agents = higher success rate. Gover
 
 Research planets generate 300 points/turn. Spend points to unlock technologies across 5 categories:
 
-- **Agriculture** — Boost food production
-- **Industry** — Boost ore/petroleum, reduce maintenance, tourism boom
-- **Military** — Upgrade unit tiers (huge combat multipliers)
-- **Society** — Population growth, civil stability, income bonuses
-- **Deep Space** — Light cruiser upgrades, research speed
+- **Agriculture** — Boost food production (8K–25K RP)
+- **Industry** — Boost ore/petroleum, reduce maintenance, tourism boom (10K–35K RP)
+- **Military** — Upgrade unit tiers — huge combat multipliers (20K–120K RP)
+- **Society** — Population growth, civil stability, income bonuses (8K–20K RP)
+- **Deep Space** — Light cruiser upgrades, research speed boost (35K–120K RP)
+
+With one research planet you'll accumulate ~15,000 RP over 50 turns — enough for entry-level techs. Two or three research planets lets you unlock mid-tier upgrades by end-game. Tier 2 military unlocks (60K–120K RP) require a dedicated research strategy.
 
 **Priority techs:** Military unit upgrades make the biggest difference in combat. A Tier 2 soldier is 2× stronger on ground than Tier 0.
 

@@ -50,7 +50,7 @@ describe("simulation strategies", () => {
       "research_rush",
       emptyCtx({
         credits: 500000,
-        researchPoints: 600000,
+        researchPoints: 20000,
         unlockedTechIds: [],
       }),
       5,
