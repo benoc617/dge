@@ -52,6 +52,9 @@
     "react-dom": "19.2.4",
     "tailwindcss": "^4"
   },
+  "overrides": {
+    "picomatch": "^4.0.4"
+  },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
