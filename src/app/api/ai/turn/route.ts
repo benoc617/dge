@@ -114,7 +114,17 @@ export async function POST(req: NextRequest) {
     player.id,
     move.action as ActionType,
     params,
-    { llmSource, aiReasoning: move.reasoning },
+    {
+      llmSource,
+      aiReasoning: move.reasoning,
+      ...(move.aiTiming
+        ? {
+            aiTiming: {
+              getAIMove: move.aiTiming,
+            },
+          }
+        : {}),
+    },
   );
 
   const displayMessage =

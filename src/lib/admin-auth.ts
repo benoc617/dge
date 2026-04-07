@@ -2,6 +2,7 @@ import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { ADMIN_SESSION_COOKIE, verifyAdminSessionToken } from "@/lib/admin-session";
 
 export const BCRYPT_ROUNDS = 12;
 
@@ -56,11 +57,15 @@ function parseBasicAuth(req: NextRequest): { username: string; password: string 
 }
 
 /**
- * Per-request admin auth guard — no cookies, no session persistence.
- * Every admin API call must include `Authorization: Basic <base64(user:pass)>`.
- * Use on admin API routes: `const denied = await requireAdmin(req); if (denied) return denied;`
+ * Per-request admin auth guard.
+ * 1) **HttpOnly session cookie** (signed, bound to admin password hash) — used by the browser admin UI.
+ * 2) **Authorization: Basic** — scripts, curl, E2E helpers (no cookie).
  */
 export async function requireAdmin(req: NextRequest): Promise<NextResponse | null> {
+  const cookie = req.cookies.get(ADMIN_SESSION_COOKIE)?.value;
+  if (cookie && (await verifyAdminSessionToken(cookie))) {
+    return null;
+  }
   const creds = parseBasicAuth(req);
   if (!creds) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

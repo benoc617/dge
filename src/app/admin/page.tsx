@@ -5,6 +5,12 @@ import Link from "next/link";
 import { AI_CONFIGS } from "@/lib/ai-builtin-config";
 import { validatePasswordStrength } from "@/lib/auth";
 import { AUTH } from "@/lib/game-constants";
+import {
+  adminApiInit,
+  clearAdminCredentials,
+  loadStoredAdminUsername,
+  saveAdminUsername,
+} from "@/lib/admin-client-storage";
 
 type GalaxyRow = {
   id: string;
@@ -19,6 +25,7 @@ type GalaxyRow = {
 };
 
 export default function AdminPage() {
+  const [hydrated, setHydrated] = useState(false);
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -45,33 +52,31 @@ export default function AdminPage() {
   const [intError, setIntError] = useState("");
   const [intOk, setIntOk] = useState(false);
 
-  function adminHeaders(): HeadersInit {
-    return {
-      "Content-Type": "application/json",
-      "X-SRX-CSRF": "1",
-      Authorization: "Basic " + btoa(username + ":" + password),
-    };
-  }
+  useEffect(() => {
+    const u = loadStoredAdminUsername();
+    if (u) setUsername(u);
+    setHydrated(true);
+  }, []);
 
   const checkMe = useCallback(async () => {
-    if (!username || !password) {
-      setAuthed(false);
-      return false;
+    if (!hydrated) return false;
+    const res = await fetch("/api/admin/me", { credentials: "include" });
+    if (res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { username?: string };
+      if (typeof data.username === "string") setUsername(data.username);
+      setAuthed(true);
+      return true;
     }
-    const res = await fetch("/api/admin/me", {
-      headers: { Authorization: "Basic " + btoa(username + ":" + password) },
-    });
-    setAuthed(res.ok);
-    return res.ok;
-  }, [username, password]);
+    setAuthed(false);
+    return false;
+  }, [hydrated]);
 
   useEffect(() => {
     void checkMe();
   }, [checkMe]);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- adminHeaders depends on username/password already tracked by checkMe
   const loadGalaxies = useCallback(async () => {
-    const res = await fetch("/api/admin/galaxies", { headers: adminHeaders() });
+    const res = await fetch("/api/admin/galaxies", adminApiInit());
     if (!res.ok) return;
     const data = await res.json();
     const list: GalaxyRow[] = data.galaxies ?? [];
@@ -84,9 +89,8 @@ export default function AdminPage() {
     });
   }, []);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const loadIntegration = useCallback(async () => {
-    const res = await fetch("/api/admin/settings", { headers: adminHeaders() });
+    const res = await fetch("/api/admin/settings", adminApiInit());
     if (!res.ok) return;
     const data = await res.json();
     setIntGeminiModel(typeof data.geminiModel === "string" ? data.geminiModel : "gemini-2.5-flash");
@@ -107,24 +111,26 @@ export default function AdminPage() {
     e.preventDefault();
     setError("");
     setLoading(true);
-    const res = await fetch("/api/admin/login", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-SRX-CSRF": "1",
-        Authorization: "Basic " + btoa(username + ":" + password),
-      },
-      body: JSON.stringify({ username, password }),
-    });
+    const res = await fetch(
+      "/api/admin/login",
+      adminApiInit({
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+      }),
+    );
     setLoading(false);
     if (!res.ok) {
       setError("Invalid credentials");
       return;
     }
+    saveAdminUsername(username);
+    setPassword("");
     setAuthed(true);
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    await fetch("/api/admin/logout", adminApiInit({ method: "POST" }));
+    clearAdminCredentials();
     setAuthed(false);
     setUsername("");
     setPassword("");
@@ -136,6 +142,7 @@ export default function AdminPage() {
     setPwdError("");
     setIntOk(false);
     setIntError("");
+    setPassword("");
   }
 
   async function handleSaveIntegration(e: React.FormEvent) {
@@ -145,11 +152,13 @@ export default function AdminPage() {
     setIntLoading(true);
     const body: Record<string, string> = { geminiModel: intGeminiModel.trim() || "gemini-2.5-flash" };
     if (intGeminiKey.trim()) body.geminiApiKey = intGeminiKey.trim();
-    const res = await fetch("/api/admin/settings", {
-      method: "PATCH",
-      headers: adminHeaders(),
-      body: JSON.stringify(body),
-    });
+    const res = await fetch(
+      "/api/admin/settings",
+      adminApiInit({
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    );
     setIntLoading(false);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -164,11 +173,13 @@ export default function AdminPage() {
     setIntError("");
     setIntOk(false);
     setIntLoading(true);
-    const res = await fetch("/api/admin/settings", {
-      method: "PATCH",
-      headers: adminHeaders(),
-      body: JSON.stringify(body),
-    });
+    const res = await fetch(
+      "/api/admin/settings",
+      adminApiInit({
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    );
     setIntLoading(false);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -193,18 +204,20 @@ export default function AdminPage() {
       return;
     }
     setPwdLoading(true);
-    const res = await fetch("/api/admin/password", {
-      method: "POST",
-      headers: adminHeaders(),
-      body: JSON.stringify({ currentPassword: pwdCurrent, newPassword: pwdNew }),
-    });
+    const res = await fetch(
+      "/api/admin/password",
+      adminApiInit({
+        method: "POST",
+        body: JSON.stringify({ currentPassword: pwdCurrent, newPassword: pwdNew }),
+      }),
+    );
     setPwdLoading(false);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       setPwdError(typeof data.error === "string" ? data.error : "Could not update password");
       return;
     }
-    setPassword(pwdNew);
+    setPassword("");
     setPwdCurrent("");
     setPwdNew("");
     setPwdConfirm("");
@@ -215,15 +228,17 @@ export default function AdminPage() {
     e.preventDefault();
     setError("");
     setLoading(true);
-    const res = await fetch("/api/admin/galaxies", {
-      method: "POST",
-      headers: adminHeaders(),
-      body: JSON.stringify({
-        galaxyName: newName.trim() || undefined,
-        isPublic: newPublic,
-        aiNames: selectedAI.size ? Array.from(selectedAI) : undefined,
+    const res = await fetch(
+      "/api/admin/galaxies",
+      adminApiInit({
+        method: "POST",
+        body: JSON.stringify({
+          galaxyName: newName.trim() || undefined,
+          isPublic: newPublic,
+          aiNames: selectedAI.size ? Array.from(selectedAI) : undefined,
+        }),
       }),
-    });
+    );
     setLoading(false);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -268,11 +283,13 @@ export default function AdminPage() {
     if (!confirm(label)) return;
     setDeleteError("");
     setDeleting(true);
-    const res = await fetch("/api/admin/galaxies", {
-      method: "DELETE",
-      headers: adminHeaders(),
-      body: JSON.stringify({ ids }),
-    });
+    const res = await fetch(
+      "/api/admin/galaxies",
+      adminApiInit({
+        method: "DELETE",
+        body: JSON.stringify({ ids }),
+      }),
+    );
     setDeleting(false);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -287,7 +304,7 @@ export default function AdminPage() {
     await loadGalaxies();
   }
 
-  if (authed === null) {
+  if (!hydrated || authed === null) {
     return (
       <main className="min-h-screen bg-black text-green-400 font-mono flex items-center justify-center">
         <p className="text-green-700 text-sm">Loading…</p>
@@ -342,7 +359,11 @@ export default function AdminPage() {
           <button type="button" onClick={() => void loadGalaxies()} className="text-green-600 hover:text-green-400">
             Refresh
           </button>
-          <button type="button" onClick={handleLogout} className="text-green-700 hover:text-red-400">
+          <button
+            type="button"
+            onClick={() => void handleLogout()}
+            className="text-green-700 hover:text-red-400"
+          >
             Log out
           </button>
           <Link href="/" className="text-green-700 hover:text-green-400">
@@ -397,7 +418,10 @@ export default function AdminPage() {
             Username is only set via <span className="text-green-600">ADMIN_USERNAME</span> (default admin). Password starts from{" "}
             <span className="text-green-600">INITIAL_ADMIN_PASSWORD</span> until you set one below (stored hashed in the database).
           </p>
-          <p className="text-green-800">Admin auth uses HTTP Basic on every request. Credentials are held in browser memory only (no cookies).</p>
+          <p className="text-green-800">
+            After sign-in, auth is an httpOnly signed session cookie (password not stored in the browser). Scripts and tests may still use{" "}
+            <span className="text-green-600">Authorization: Basic</span> instead.
+          </p>
         </div>
 
         <form onSubmit={handleChangePassword} className="border border-green-800 p-4 space-y-3">

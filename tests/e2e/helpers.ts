@@ -323,9 +323,16 @@ export async function flushScheduledTestUserDeletions(): Promise<void> {
   await deleteTestUserAccountsByUsernames(names);
 }
 
-export async function adminLogout(_cookie: string) {
-  // No-op: admin auth is now per-request (no session to invalidate)
-  return { status: 200 };
+export async function adminLogout(cookie: string) {
+  const r = await fetch(`${BASE}/api/admin/logout`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: cookie,
+      "X-SRX-CSRF": "1",
+    },
+  });
+  return { status: r.status };
 }
 
 export async function adminChangePassword(cookie: string, currentPassword: string, newPassword: string) {

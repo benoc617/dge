@@ -5,6 +5,7 @@ import {
   computeRivalAttackTargets,
   shouldLogAiTiming,
   type AIMoveContext,
+  type AIMoveTiming,
 } from "@/lib/gemini";
 import { processAction, runAndPersistTick, type ActionType } from "@/lib/game-engine";
 import { processAiMoveOrSkip } from "@/lib/ai-process-move";
@@ -116,6 +117,7 @@ export async function getAIMoveDecision(playerId: string): Promise<{
   action: ActionType;
   params: Record<string, unknown>;
   llmSource: string;
+  aiTiming?: AIMoveTiming;
 } | null> {
   const player = await prisma.player.findUnique({
     where: { id: playerId },
@@ -137,6 +139,7 @@ export async function getAIMoveDecision(playerId: string): Promise<{
     action: move.action as ActionType,
     params: paramsFromAIMove(move),
     llmSource: move.llmSource,
+    aiTiming: move.aiTiming,
   };
 }
 
@@ -177,13 +180,40 @@ async function runOneAI(playerId: string, playerName: string, persona: string | 
     const params = paramsFromAIMove(move);
 
     const tExec0 = performance.now();
+    /** Written to TurnLog before `processAction` completes — omit execute/total wall (unknown until after). */
+    const logMeta = {
+      llmSource,
+      aiReasoning: move.reasoning,
+      aiTiming: {
+        getAIMove: move.aiTiming
+          ? {
+              configMs: move.aiTiming.configMs,
+              generateMs: move.aiTiming.generateMs,
+              totalMs: move.aiTiming.totalMs,
+            }
+          : undefined,
+        runOneAI: {
+          contextMs: Math.round(contextMs),
+          getAIMoveMs: Math.round(getAIMoveMs),
+        },
+      },
+    };
+
     const { finalResult, skipped, invalidMessage } = await processAiMoveOrSkip(
       playerId,
       move.action as ActionType,
       params,
-      { llmSource, aiReasoning: move.reasoning },
+      logMeta,
     );
     const executeMs = performance.now() - tExec0;
+    const aiTimingFull = {
+      getAIMove: logMeta.aiTiming.getAIMove,
+      runOneAI: {
+        ...logMeta.aiTiming.runOneAI,
+        executeMs: Math.round(executeMs),
+        totalMs: Math.round(performance.now() - tTurn0),
+      },
+    };
 
     if (shouldLogAiTiming()) {
       console.info(
@@ -217,6 +247,7 @@ async function runOneAI(playerId: string, playerName: string, persona: string | 
           skippedInvalid: skipped,
           reasoning: move.reasoning,
           success: finalResult.success,
+          aiTiming: aiTimingFull,
         } as object,
       },
     });

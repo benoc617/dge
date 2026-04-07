@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, verifyAdminPassword, BCRYPT_ROUNDS } from "@/lib/admin-auth";
+import {
+  attachAdminSessionCookie,
+  signAdminSessionToken,
+} from "@/lib/admin-session";
 
 import { AUTH } from "@/lib/game-constants";
 import { validatePasswordStrength } from "@/lib/auth";
@@ -36,5 +40,9 @@ export async function POST(req: NextRequest) {
     update: { passwordHash },
   });
 
-  return NextResponse.json({ ok: true });
+  const adminUsername = process.env.ADMIN_USERNAME ?? "admin";
+  const token = await signAdminSessionToken(adminUsername);
+  const res = NextResponse.json({ ok: true });
+  attachAdminSessionCookie(res, req, token);
+  return res;
 }

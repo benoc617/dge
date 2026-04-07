@@ -315,7 +315,17 @@ async function runOneDoorGameAI(playerId: string): Promise<void> {
     playerId,
     move.action,
     move.params,
-    { llmSource: move.llmSource, aiReasoning: "(door game)" },
+    {
+      llmSource: move.llmSource,
+      aiReasoning: "(door game)",
+      ...(move.aiTiming
+        ? {
+            aiTiming: {
+              getAIMove: move.aiTiming,
+            },
+          }
+        : {}),
+    },
     doorActionOpts,
   );
   // Invalid action → skip path runs processAction(end_turn) but never hit closeFullTurn; without this

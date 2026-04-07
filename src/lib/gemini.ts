@@ -186,6 +186,14 @@ export type AIMoveContext = {
   rivalAttackTargets: string[];
 };
 
+/** Persisted on `TurnLog.details` (via `logMeta`) for post-hoc latency analysis. */
+export type AIMoveTiming = {
+  configMs: number;
+  /** `generateContent` only; 0 when fallback or no API call. */
+  generateMs: number;
+  totalMs: number;
+};
+
 export type AIMoveResult = {
   action: string;
   target?: string;
@@ -193,8 +201,24 @@ export type AIMoveResult = {
   reasoning: string;
   /** Whether the Gemini API produced the move or local rule-based fallback ran. */
   llmSource: "gemini" | "fallback";
+  /** Wall-clock breakdown inside `getAIMove` (also merged into AI `logMeta` → TurnLog). */
+  aiTiming?: AIMoveTiming;
   [key: string]: unknown;
 };
+
+function attachAiTiming(
+  result: AIMoveResult,
+  tStart: number,
+  configMs: number,
+  generateMs: number,
+): AIMoveResult {
+  result.aiTiming = {
+    configMs: Math.round(configMs),
+    generateMs: Math.round(generateMs),
+    totalMs: Math.round(performance.now() - tStart),
+  };
+  return result;
+}
 
 function sanitizeAIMove(
   move: Record<string, unknown>,
@@ -378,7 +402,7 @@ Respond ONLY with valid JSON:
       source: "fallback",
       reason: "no_api_key",
     });
-    return out;
+    return attachAiTiming(out, tStart, configMs, 0);
   }
 
   try {
@@ -400,7 +424,7 @@ Respond ONLY with valid JSON:
         source: "fallback",
         reason: "invalid_action",
       });
-      return out;
+      return attachAiTiming(out, tStart, configMs, generateMs);
     }
     const out = sanitizeAIMove(parsed, ctx, "gemini");
     logGetAIMoveTiming({
@@ -409,7 +433,7 @@ Respond ONLY with valid JSON:
       generateMs,
       source: "gemini",
     });
-    return out;
+    return attachAiTiming(out, tStart, configMs, generateMs);
   } catch {
     const out = runFallback();
     logGetAIMoveTiming({
@@ -419,7 +443,7 @@ Respond ONLY with valid JSON:
       source: "fallback",
       reason: "api_or_parse_error",
     });
-    return out;
+    return attachAiTiming(out, tStart, configMs, 0);
   }
 }
 

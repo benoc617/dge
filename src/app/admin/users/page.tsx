@@ -2,6 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import {
+  adminApiInit,
+  clearAdminCredentials,
+  loadStoredAdminUsername,
+  saveAdminUsername,
+} from "@/lib/admin-client-storage";
 
 type UserRow = {
   id: string;
@@ -34,6 +40,7 @@ function fmtIso(iso: string | null): string {
 }
 
 export default function AdminUsersPage() {
+  const [hydrated, setHydrated] = useState(false);
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -48,31 +55,29 @@ export default function AdminUsersPage() {
   const [pwConfirm, setPwConfirm] = useState("");
   const [pwLoading, setPwLoading] = useState(false);
 
-  function adminHeaders(): HeadersInit {
-    return {
-      "Content-Type": "application/json",
-      "X-SRX-CSRF": "1",
-      Authorization: "Basic " + btoa(username + ":" + password),
-    };
-  }
+  useEffect(() => {
+    const u = loadStoredAdminUsername();
+    if (u) setUsername(u);
+    setHydrated(true);
+  }, []);
 
   const checkMe = useCallback(async () => {
-    if (!username || !password) {
-      setAuthed(false);
-      return false;
+    if (!hydrated) return false;
+    const res = await fetch("/api/admin/me", { credentials: "include" });
+    if (res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { username?: string };
+      if (typeof data.username === "string") setUsername(data.username);
+      setAuthed(true);
+      return true;
     }
-    const res = await fetch("/api/admin/me", {
-      headers: { Authorization: "Basic " + btoa(username + ":" + password) },
-    });
-    setAuthed(res.ok);
-    return res.ok;
-  }, [username, password]);
+    setAuthed(false);
+    return false;
+  }, [hydrated]);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const loadUsers = useCallback(async () => {
     setLoadError("");
     setLoading(true);
-    const res = await fetch("/api/admin/users", { headers: adminHeaders() });
+    const res = await fetch("/api/admin/users", adminApiInit());
     setLoading(false);
     if (!res.ok) {
       setLoadError(res.status === 401 ? "Not signed in." : "Failed to load users.");
@@ -103,11 +108,13 @@ export default function AdminUsersPage() {
       return;
     }
     setPwLoading(true);
-    const res = await fetch("/api/admin/users", {
-      method: "PATCH",
-      headers: adminHeaders(),
-      body: JSON.stringify({ userId: pwUserId, newPassword: pwNew }),
-    });
+    const res = await fetch(
+      "/api/admin/users",
+      adminApiInit({
+        method: "PATCH",
+        body: JSON.stringify({ userId: pwUserId, newPassword: pwNew }),
+      }),
+    );
     setPwLoading(false);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -127,10 +134,10 @@ export default function AdminUsersPage() {
         `The login record will be removed. Empire data in games remains; commander rows become unlinked (legacy-style).`,
     );
     if (!ok) return;
-    const res = await fetch(`/api/admin/users?id=${encodeURIComponent(user.id)}`, {
-      method: "DELETE",
-      headers: { Authorization: "Basic " + btoa(username + ":" + password) },
-    });
+    const res = await fetch(
+      `/api/admin/users?id=${encodeURIComponent(user.id)}`,
+      adminApiInit({ method: "DELETE" }),
+    );
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       setActionError(typeof data.error === "string" ? data.error : "Delete failed");
@@ -143,24 +150,33 @@ export default function AdminUsersPage() {
     e.preventDefault();
     setLoginError("");
     setLoginLoading(true);
-    const res = await fetch("/api/admin/login", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-SRX-CSRF": "1",
-        Authorization: "Basic " + btoa(username + ":" + password),
-      },
-      body: JSON.stringify({ username, password }),
-    });
+    const res = await fetch(
+      "/api/admin/login",
+      adminApiInit({
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+      }),
+    );
     setLoginLoading(false);
     if (!res.ok) {
       setLoginError("Invalid credentials");
       return;
     }
+    saveAdminUsername(username);
+    setPassword("");
     setAuthed(true);
   }
 
-  if (authed === null) {
+  async function handleLogout() {
+    await fetch("/api/admin/logout", adminApiInit({ method: "POST" }));
+    clearAdminCredentials();
+    setAuthed(false);
+    setUsername("");
+    setPassword("");
+    setUsers([]);
+  }
+
+  if (!hydrated || authed === null) {
     return (
       <main className="min-h-screen bg-black text-green-400 font-mono flex items-center justify-center">
         <p className="text-green-700 text-sm">Loading…</p>
@@ -216,6 +232,13 @@ export default function AdminUsersPage() {
             className="text-green-600 hover:text-green-400 disabled:opacity-40"
           >
             Refresh
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleLogout()}
+            className="text-green-700 hover:text-red-400"
+          >
+            Log out
           </button>
           <Link href="/admin" className="text-green-700 hover:text-green-400">
             Galaxies
