@@ -8,7 +8,10 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@dge/shared": "*",
+    "@dge/shared": "*"
+  },
+  "peerDependencies": {
+    "react": ">=18",
     "@dge/engine": "*"
   }
 }
