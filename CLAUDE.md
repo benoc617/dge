@@ -265,6 +265,46 @@ Use this when you need to verify what happened in a live or test DB (e.g. from C
 - **AI “self-attack”** — Gemini (or bad JSON) could emit `target` equal to the acting commander’s name. **`processAction` now rejects** targeting your own `playerId` for attacks, covert ops, and treaty proposals. The Gemini prompt also forbids self-targets.
 - **TurnLog `report.income` all zeros** — seen when actions ran **after** the tick was already persisted; previously the full `details` stored a zeroed stub `report`. Now **`tickReportDeferred: true`** is stored instead of that stub when applicable.
 
+## Engine Packages & Game Separation (DGE)
+
+This repo uses an **npm workspace monorepo** where game-agnostic infrastructure lives in `packages/` and SRX is one game implementation.
+
+### Package responsibilities
+
+| Package | Import | Role |
+|---------|--------|------|
+| `packages/shared/` | `@dge/shared` | TypeScript types only: `GameDefinition<TState>`, `ActionResult`, `ReplayFrame`, `Move`, `Rng` |
+| `packages/engine/` | `@dge/engine` | Runtime: `GameOrchestrator`, registry, MCTS search, turn management, AI runner, cache, DB lock |
+| `packages/shell/` | `@dge/shell` | React UI: `GameLayout`, `TurnIndicator`, `useGameState`, `useGameAction`, `GameUIConfig<TState>` |
+| `games/srx/` | `@dge/srx` | SRX game definition: `srxGameDefinition` implements `GameDefinition<SrxWorldState>` |
+
+### Separation rules (must not violate)
+
+- **Engine never imports game code** — no references to `@/lib/game-engine`, `sim-state`, `door-game-turns`, etc.
+- **Shell never imports game components** — only `GameStateBase` and `GameUIConfig<TState>` are game-aware
+- **Game-specific hooks injected via interfaces** — `TurnOrderHooks` / `DoorGameHooks` let the engine call game persistence without knowing SRX
+- **Registration side-effect** — `src/lib/srx-registration.ts` wires SRX into the engine registry; import it once at route startup
+
+### Adding a second game
+
+1. Create `games/{name}/src/definition.ts` implementing `GameDefinition<{Name}State>`
+2. Create `games/{name}/src/index.ts` barrel exporting the definition and state type
+3. Create `games/{name}/package.json` as `@dge/{name}`
+4. Add a `src/lib/{name}-registration.ts` side-effect module that calls `registerGame("{name}", definition, hooks)`
+5. Import the registration module at the top of the relevant API route files
+6. Create a `GameUIConfig<{Name}State>` and pass it to `<GameLayout>` in the UI
+
+### Tests for engine and game code
+
+- **`tests/unit/registry.test.ts`** — covers `registerGame`, `getGame`, `requireGame`, `_clearRegistry`
+- **`tests/unit/orchestrator.test.ts`** — covers guard conditions, `canPlayerAct`, `sessionCannotHaveActiveTurn`
+- **`tests/unit/srx-game-definition.test.ts`** — covers SRX pure-track: `applyTick`, `applyAction`, `evalState`, `generateCandidateMoves`
+- **`tests/unit/door-game-turns.test.ts`** — covers door-game lifecycle (openFullTurn, closeFullTurn, tryRollRound)
+- **`tests/unit/turn-order-lobby.test.ts`** — covers `sessionCannotHaveActiveTurn` (sequential)
+- **`tests/e2e/`** — full-track sequential + door-game integration (game-flow, multiplayer, door-game, auth, admin)
+
+Shell React components (`GameLayout`, `TurnIndicator`) are integration-tested via the SRX E2E suite; dedicated unit tests would require a jsdom environment (not currently configured).
+
 ## Architecture
 
 Solar Realms Extreme is a turn-based galactic empire management game (BBS-era Solar Realms Elite remake with modern improvements). See `GAME-SPEC.md` for the complete technical specification of all game mechanics and formulas.

@@ -126,6 +126,33 @@ On a host with a matching Node install and `DATABASE_URL`, the same `npm run sim
 
 Preset strategies (default roster cycles one per simulated player): `balanced`, `economy_rush`, `military_rush`, `turtle`, `random`, `research_rush`, `credit_leverage`, `growth_focus`, `mcts`. Use `--players 9` to run all presets in one sim. `sim:balance` runs 25×100-turn games with aggregate win rates and balance notes.
 
+## Monorepo Structure (DGE — Door Game Engine)
+
+SRX is built on **DGE** (Door Game Engine), a game-agnostic engine extracted into reusable npm workspace packages. SRX is the first game implementation; the engine is designed to host additional games (e.g. chess) without modification.
+
+```
+packages/
+  engine/    @dge/engine  — game-agnostic runtime: turn management, MCTS/MaxN search,
+                            GameOrchestrator, registry, caching, AI runner, door-game turns
+  shared/    @dge/shared  — shared TypeScript types: GameDefinition<TState>, Rng, Move,
+                            ActionResult, ReplayFrame, SideEffect (no runtime code)
+  shell/     @dge/shell   — game-agnostic React UI shell: GameLayout, TurnIndicator,
+                            useGameState hook, useGameAction hook, GameUIConfig<TState>
+games/
+  srx/       @dge/srx     — SRX game definition: pure-track applyTick/applyAction/evalState/
+                            generateCandidateMoves + migration shims for the full-track path
+src/
+  app/                    — Next.js App Router (API routes + pages)
+  components/             — SRX React components (EmpirePanel, ActionPanel, EventLog, Leaderboard)
+  lib/                    — SRX-specific services (game-engine, AI runner, combat, espionage, …)
+```
+
+**Key contracts:**
+- Games implement `GameDefinition<TState>` from `@dge/shared` — the engine never imports game code
+- Games register via `registerGame("type", definition, hooks)` — routes look up by session's `gameType`
+- Games provide a `GameUIConfig<TState>` to `@dge/shell` — the shell renders panels without knowing about game internals
+- Hook injection (via `TurnOrderHooks` / `DoorGameHooks`) lets the engine call game-specific persistence and AI functions
+
 ## Tech Stack
 
 | Technology | Role |
@@ -142,6 +169,34 @@ Preset strategies (default roster cycles one per simulated player): `balanced`, 
 ## Project Structure
 
 ```
+packages/
+  engine/src/
+    orchestrator.ts           # GameOrchestrator: sequential + door-game action/tick lifecycle
+    registry.ts               # registerGame / requireGame / listGameTypes
+    turn-order.ts             # Sequential turn management (getCurrentTurn, advanceTurn)
+    door-game.ts              # Simultaneous turn management (openFullTurn, closeFullTurn, tryRollRound)
+    search.ts                 # MCTS and MaxN search (parameterised by GameDefinition)
+    ai-runner.ts              # Generic AI turn loop (delegates to definition.buildAIContext)
+    cache.ts                  # Cache-aside helpers (namespace-parameterised)
+    db-context.ts             # Prisma client + advisory lock (withCommitLock)
+    redis.ts                  # Fail-open Redis helpers
+    llm.ts                    # Gemini API caller (game-agnostic)
+    ai-concurrency.ts         # Dynamic Gemini/MCTS semaphores
+    door-ai-runtime-settings.ts  # Door-game AI concurrency caps (DB + env)
+  shared/src/
+    types.ts                  # GameDefinition<TState>, ActionResult, ReplayFrame, Move, Rng, …
+    rng.ts                    # Seedable PRNG (shared Rng implementation)
+  shell/src/
+    types.ts                  # GameStateBase, GameUIConfig<TState>, GamePanelProps<TState>
+    GameLayout.tsx            # Panel renderer (three-column / two-column / single)
+    TurnIndicator.tsx         # Turn status (sequential + door-game + lobby)
+    hooks/useGameState.ts     # Generic status-poll hook
+    hooks/useGameAction.ts    # POST /api/game/action wrapper
+games/
+  srx/src/
+    definition.ts             # SrxGameDefinition implements GameDefinition<SrxWorldState>
+    types.ts                  # SrxWorldState, SrxEmpireSlice
+    index.ts                  # Barrel (srxGameDefinition, SrxWorldState)
 src/
   app/
     page.tsx                        # Main game UI + TurnSummaryModal + TurnTimer
