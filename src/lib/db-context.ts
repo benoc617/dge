@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 
@@ -22,27 +21,42 @@ export class GalaxyBusyError extends Error {
   }
 }
 
-/** Map session id to a signed bigint for Postgres advisory locks. */
-export function hashSessionIdToBigInt(sessionId: string): bigint {
-  const buf = createHash("sha256").update(sessionId).digest();
-  const n = buf.readBigUInt64BE(0);
-  const mask = (BigInt(1) << BigInt(63)) - BigInt(1);
-  return n & mask;
+/**
+ * Detect MySQL/MariaDB lock errors from NOWAIT (MySQL error 3572).
+ * Thrown when SELECT ... FOR UPDATE NOWAIT cannot acquire the row lock immediately.
+ */
+function isMysqlLockError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const msg = e.message;
+  // MySQL 3572: "Statement aborted because lock(s) could not be acquired immediately and NOWAIT is set."
+  if (msg.includes("lock(s) could not be acquired immediately") || msg.includes("NOWAIT")) return true;
+  // mariadb driver exposes errno directly; Prisma may also wrap it in meta
+  const err = e as Error & { errno?: number; meta?: { errno?: number } };
+  if (err.errno === 3572 || err.meta?.errno === 3572) return true;
+  return false;
 }
 
 /**
  * Serialize mutating requests per game session with a try-lock (no indefinite wait).
+ * Uses SELECT ... FOR UPDATE NOWAIT on a SessionLock row — MySQL equivalent of pg_try_advisory_xact_lock.
+ * The lock is transaction-scoped and released automatically on commit or rollback.
  * All DB work in `fn` must go through `getDb()` (not raw `prisma`) so it shares the transaction connection.
  */
 export async function withCommitLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
-  const key = hashSessionIdToBigInt(sessionId);
   return prisma.$transaction(
     async (tx) => {
-      const rows = await tx.$queryRaw<{ ok: boolean }[]>`
-      SELECT pg_try_advisory_xact_lock(${key}::bigint) AS ok
-    `;
-      if (!rows[0]?.ok) {
-        throw new GalaxyBusyError();
+      // Ensure lock row exists — INSERT IGNORE handles concurrent creation races safely
+      await tx.$executeRaw`
+        INSERT IGNORE INTO SessionLock (sessionId, lockedAt) VALUES (${sessionId}, NOW())
+      `;
+      // Acquire a row-level lock; NOWAIT fails immediately if another transaction holds it
+      try {
+        await tx.$queryRaw<{ sessionId: string }[]>`
+          SELECT sessionId FROM SessionLock WHERE sessionId = ${sessionId} FOR UPDATE NOWAIT
+        `;
+      } catch (e) {
+        if (isMysqlLockError(e)) throw new GalaxyBusyError();
+        throw e;
       }
       return txStore.run(tx as Prisma.TransactionClient, fn);
     },

@@ -33,9 +33,16 @@ async function emitGameEvent(
 
 /** Queue a line on the defender's next turn situation report (shown as ALERT: …). */
 async function pushDefenderAlert(defenderEmpireId: string, message: string) {
+  const current = await getDb().empire.findUnique({
+    where: { id: defenderEmpireId },
+    select: { pendingDefenderAlerts: true },
+  });
+  const alerts = Array.isArray(current?.pendingDefenderAlerts)
+    ? (current.pendingDefenderAlerts as string[])
+    : [];
   await getDb().empire.update({
     where: { id: defenderEmpireId },
-    data: { pendingDefenderAlerts: { push: message } },
+    data: { pendingDefenderAlerts: [...alerts, message] },
   });
 }
 
@@ -199,16 +206,16 @@ export async function processTurnTick(
   army: Army,
   planets: Planet[],
   supplyRates: SupplyRates | null,
-  research: { unlockedTechIds: string[] } | null,
+  research: { unlockedTechIds: string[] | unknown } | null,
   opts?: ProcessTurnTickOptions,
 ): Promise<{ updatedEmpire: Partial<Empire>; updatedArmy: Partial<Army>; updatedPlanets: { id: string; shortTermProduction: number }[]; report: TurnReport }> {
   const decTurnsLeft = opts?.decrementTurnsLeft !== false;
   const endgameSettlement = opts?.endgameSettlement === true;
   const events: string[] = [];
-  const pendingAlerts = empire.pendingDefenderAlerts ?? [];
+  const pendingAlerts = (empire.pendingDefenderAlerts as string[]) ?? [];
 
   // ----- Passive tech bonuses from unlocked research -----
-  const unlockedIds = research?.unlockedTechIds ?? [];
+  const unlockedIds = (research?.unlockedTechIds as string[]) ?? [];
   let planetMaintReduction = 0;  // percent reduction
   let creditsBonus = 0;           // percent income multiplier
   let popGrowthBonus = 0;         // percent births multiplier
@@ -759,12 +766,12 @@ async function applyPostActionEconomyFinance(
   empireId: string,
   tick: { updatedEmpire: Partial<Empire>; report: TurnReport },
   planets: Planet[],
-  research: { id: string; unlockedTechIds: string[] } | null,
+  research: { id: string; unlockedTechIds: string[] | unknown } | null,
 ): Promise<void> {
   const researchPlanetCount = planets.filter((p) => p.type === "RESEARCH").length;
   if (researchPlanetCount > 0 && research) {
     let researchSpeedMult = 1.0;
-    for (const id of research.unlockedTechIds) {
+    for (const id of (research.unlockedTechIds as string[])) {
       const tech = getTech(id);
       if (tech?.effect.type === "research_speed") researchSpeedMult += tech.effect.percent / 100;
     }
@@ -1777,16 +1784,17 @@ export async function processAction(
 
       const coalition = await getDb().coalition.findUnique({ where: { name: coalitionName } });
       if (!coalition) return { success: false, message: "Coalition not found." };
-      if (coalition.memberIds.length >= coalition.maxMembers) {
+      const coalitionMembers = coalition.memberIds as string[];
+      if (coalitionMembers.length >= coalition.maxMembers) {
         return { success: false, message: "Coalition is full." };
       }
-      if (coalition.memberIds.includes(empire.id)) {
+      if (coalitionMembers.includes(empire.id)) {
         return { success: false, message: "Already a member." };
       }
 
       await getDb().coalition.update({
         where: { id: coalition.id },
-        data: { memberIds: [...coalition.memberIds, empire.id] },
+        data: { memberIds: [...coalitionMembers, empire.id] },
       });
 
       actionMsg = `Joined coalition "${coalitionName}".`;
@@ -1799,11 +1807,12 @@ export async function processAction(
 
       const coalition = await getDb().coalition.findUnique({ where: { name: coalitionName } });
       if (!coalition) return { success: false, message: "Coalition not found." };
-      if (!coalition.memberIds.includes(empire.id)) {
+      const leaveMembers = coalition.memberIds as string[];
+      if (!leaveMembers.includes(empire.id)) {
         return { success: false, message: "Not a member." };
       }
 
-      const newMembers = coalition.memberIds.filter((id) => id !== empire.id);
+      const newMembers = leaveMembers.filter((id) => id !== empire.id);
       if (newMembers.length === 0) {
         await getDb().coalition.delete({ where: { id: coalition.id } });
         actionMsg = `Left and dissolved coalition "${coalitionName}".`;
@@ -2012,11 +2021,12 @@ export async function processAction(
       const tech = getTech(techId);
       if (!tech) return { success: false, message: "Unknown technology." };
 
-      if (research.unlockedTechIds.includes(techId)) {
+      const unlockedTechIds = research.unlockedTechIds as string[];
+      if (unlockedTechIds.includes(techId)) {
         return { success: false, message: "Already researched." };
       }
 
-      const available = getAvailableTech(research.unlockedTechIds);
+      const available = getAvailableTech(unlockedTechIds);
       if (!available.find((t) => t.id === techId)) {
         return { success: false, message: "Prerequisites not met or tech not available." };
       }
@@ -2030,7 +2040,7 @@ export async function processAction(
         where: { id: research.id },
         data: {
           accumulatedPoints: { decrement: tech.cost },
-          unlockedTechIds: [...research.unlockedTechIds, techId],
+          unlockedTechIds: [...unlockedTechIds, techId],
         },
       });
 

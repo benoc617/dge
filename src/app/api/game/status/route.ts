@@ -3,9 +3,9 @@ import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { CIVIL_STATUS_NAMES, PLANET_CONFIG } from "@/lib/game-constants";
 import { getCurrentTurn } from "@/lib/turn-order";
-import { tryRollRound } from "@/lib/door-game-turns";
-import { runDoorGameAITurns } from "@/lib/door-game-turns";
+import { tryRollRound, enqueueAiTurnsForSession } from "@/lib/door-game-turns";
 import { logSrxTiming, msElapsed } from "@/lib/srx-timing";
+import { getCachedPlayer } from "@/lib/game-state-service";
 import bcrypt from "bcryptjs";
 
 const playerInclude = {
@@ -214,7 +214,7 @@ async function buildResponse(player: FullPlayer) {
     research: e.research
       ? {
           accumulatedPoints: e.research.accumulatedPoints,
-          unlockedTechIds: e.research.unlockedTechIds,
+          unlockedTechIds: e.research.unlockedTechIds as string[],
         }
       : null,
   };
@@ -233,7 +233,7 @@ export async function GET(req: NextRequest) {
 
   const tFind0 = performance.now();
   const player = playerId
-    ? await findPlayerById(playerId)
+    ? await getCachedPlayer(playerId, () => findPlayerById(playerId))
     : await prisma.player.findFirst({
         where: { name: playerName!, isAI: false },
         orderBy: { createdAt: "desc" },
@@ -255,15 +255,16 @@ export async function GET(req: NextRequest) {
     routeTotalMs: msElapsed(tRoute),
   });
 
-  // Non-blocking: after response is sent, check if AIs need to run or round needs to roll.
-  // tryRollRound handles day advancement + round timeout; runDoorGameAITurns deduplicates via doorAiInFlight.
+  // Non-blocking: after response is sent, check if round needs to roll and enqueue AI jobs.
+  // tryRollRound handles day advancement + round timeout; enqueueAiTurnsForSession inserts
+  // pending rows for the ai-worker process to claim and execute.
   if (body.turnMode === "simultaneous" && player.gameSessionId && body.fullTurnsLeftToday === 0) {
     after(async () => {
       try {
         await tryRollRound(player.gameSessionId!);
-        await runDoorGameAITurns(player.gameSessionId!);
+        await enqueueAiTurnsForSession(player.gameSessionId!);
       } catch (e) {
-        console.error("[status] after: tryRollRound/AI drain error", e);
+        console.error("[status] after: tryRollRound/enqueue error", e);
       }
     });
   }

@@ -6,7 +6,6 @@ import {
   DOOR_AI_MOVE_TIMEOUT_MS,
   DOOR_AI_DECIDE_BATCH_SIZE,
 } from "@/lib/door-game-turns";
-import { hashSessionIdToBigInt } from "@/lib/db-context";
 
 describe("DOOR_AI_MOVE_TIMEOUT_MS", () => {
   it("matches door-game AI decide race cap (60s)", () => {
@@ -72,11 +71,3 @@ describe("isSessionRoundTimedOut", () => {
   });
 });
 
-describe("hashSessionIdToBigInt", () => {
-  it("is deterministic and fits signed 64-bit range", () => {
-    const a = hashSessionIdToBigInt("session-abc");
-    const b = hashSessionIdToBigInt("session-abc");
-    expect(a).toBe(b);
-    expect(a < BigInt(2) ** BigInt(63)).toBe(true);
-  });
-});

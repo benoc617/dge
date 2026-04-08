@@ -24,7 +24,7 @@ export async function GET() {
     id: l.id,
     galaxyName: l.galaxyName ?? `Galaxy ${l.id.slice(-6)}`,
     createdBy: l.createdBy ?? "Unknown",
-    playerCount: l.playerNames.length,
+    playerCount: (l.playerNames as string[]).length,
     maxPlayers: l.maxPlayers,
     startedAt: l.startedAt,
     turnTimeoutSecs: l.turnTimeoutSecs,

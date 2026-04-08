@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
         effectiveness: p.empire.army.effectiveness,
       } : null,
       researchPoints: p.empire.research?.accumulatedPoints ?? 0,
-      unlockedTechs: p.empire.research?.unlockedTechIds ?? [],
+      unlockedTechs: (p.empire.research?.unlockedTechIds as string[]) ?? [],
     } : null,
   }));
 

@@ -23,7 +23,7 @@ RUN npx prisma generate
 # Pre-build so the container runs `next start` — no HMR, no Turbopack file watcher, no
 # lazy compilation stalls. Dummy DATABASE_URL satisfies build-time module analysis; the
 # real URL is injected at runtime by Compose.
-RUN DATABASE_URL="postgresql://build:build@localhost:5432/build" npm run build
+RUN DATABASE_URL="mysql://build:build@localhost:3306/build" npm run build
 
 COPY scripts/docker-entrypoint-dev.sh /usr/local/bin/docker-entrypoint-dev.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-dev.sh

@@ -11,6 +11,7 @@ import {
   tryRollRound,
 } from "@/lib/door-game-turns";
 import { logSrxTiming, msBetween, msElapsed } from "@/lib/srx-timing";
+import { invalidatePlayer } from "@/lib/game-state-service";
 
 export async function POST(req: NextRequest) {
   const tRoute = performance.now();
@@ -134,6 +135,8 @@ export async function POST(req: NextRequest) {
           }
           return NextResponse.json({ turnReport: report });
         });
+        // Evict the player cache so the next status poll sees the updated turnOpen / tickProcessed.
+        void invalidatePlayer(player.id).catch(() => {});
         const committedAtMs = Date.now();
         const committedAtIso = new Date().toISOString();
         logSrxTiming("tick_route_door", {
@@ -212,6 +215,7 @@ export async function POST(req: NextRequest) {
   const tTick0 = performance.now();
   const turnReport = await runAndPersistTick(player.id);
   const runAndPersistTickMs = msElapsed(tTick0);
+  void invalidatePlayer(player.id).catch(() => {});
   const committedAtMs = Date.now();
   const committedAtIso = new Date().toISOString();
   logSrxTiming("tick_sequential", {

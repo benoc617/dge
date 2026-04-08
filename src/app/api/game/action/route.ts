@@ -11,9 +11,10 @@ import {
   openFullTurn,
   closeFullTurn,
   doorGameAutoCloseFullTurnAfterAction,
-  runDoorGameAITurns,
+  enqueueAiTurnsForSession,
 } from "@/lib/door-game-turns";
 import { logSrxTiming, msBetween, msElapsed } from "@/lib/srx-timing";
+import { invalidatePlayerAndLeaderboard } from "@/lib/game-state-service";
 
 export async function POST(req: NextRequest) {
   const tRoute = performance.now();
@@ -145,9 +146,10 @@ export async function POST(req: NextRequest) {
           const tc = performance.now();
           await closeFullTurn(p.id, sid);
           closePathMs = msElapsed(tc);
+          void invalidatePlayerAndLeaderboard(p.id, sid);
           after(() => {
-            void runDoorGameAITurns(sid).catch((err) => {
-              console.error("[door-game] runDoorGameAITurns after human end_turn", sid, err);
+            void enqueueAiTurnsForSession(sid).catch((err) => {
+              console.error("[door-game] enqueueAiTurnsForSession after human end_turn", sid, err);
             });
           });
         }
@@ -156,9 +158,10 @@ export async function POST(req: NextRequest) {
           const tc = performance.now();
           await doorGameAutoCloseFullTurnAfterAction(p.id, sid);
           closePathMs = msElapsed(tc);
+          void invalidatePlayerAndLeaderboard(p.id, sid);
           after(() => {
-            void runDoorGameAITurns(sid).catch((err) => {
-              console.error("[door-game] runDoorGameAITurns after human action", sid, err);
+            void enqueueAiTurnsForSession(sid).catch((err) => {
+              console.error("[door-game] enqueueAiTurnsForSession after human action", sid, err);
             });
           });
         }
@@ -260,6 +263,9 @@ export async function POST(req: NextRequest) {
     await advanceTurn(player.gameSessionId);
     advanceTurnMs = msElapsed(ta);
     runAISequence(player.gameSessionId).catch(() => {});
+    void invalidatePlayerAndLeaderboard(player.id, player.gameSessionId);
+  } else if (result.success) {
+    void invalidatePlayerAndLeaderboard(player.id, null);
   }
 
   const tSeq2 = performance.now();

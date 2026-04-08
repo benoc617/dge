@@ -31,6 +31,11 @@ echo "[srx] prisma generate + db push…"
 npx prisma generate
 npx prisma db push
 
+if [ -n "${SRX_WORKER_SCRIPT:-}" ]; then
+  echo "[srx] worker mode: ${SRX_WORKER_SCRIPT} (user: $(whoami))…"
+  exec npx tsx "${SRX_WORKER_SCRIPT}"
+fi
+
 echo "[srx] starting Next.js production server on 0.0.0.0:${PORT} (user: $(whoami))…"
 export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=4096}"
 exec npx next start --hostname 0.0.0.0 --port "${PORT}"

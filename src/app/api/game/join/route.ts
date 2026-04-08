@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "This galaxy is no longer active" }, { status: 410 });
   }
 
-  if (session.playerNames.length >= session.maxPlayers) {
+  if ((session.playerNames as string[]).length >= session.maxPlayers) {
     return NextResponse.json({ error: "Galaxy is full" }, { status: 409 });
   }
 
@@ -111,13 +111,13 @@ export async function POST(req: NextRequest) {
                 currentTurnPlayerId: p.id,
                 turnStartedAt: new Date(),
               }),
-          playerNames: { push: cred.playerName },
+          playerNames: [...(Array.isArray(sess.playerNames) ? (sess.playerNames as string[]) : []), cred.playerName],
         },
       });
     } else {
       await tx.gameSession.update({
         where: { id: session.id },
-        data: { playerNames: { push: cred.playerName } },
+        data: { playerNames: [...(Array.isArray(sess.playerNames) ? (sess.playerNames as string[]) : []), cred.playerName] },
       });
     }
 

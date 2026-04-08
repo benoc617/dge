@@ -193,7 +193,7 @@ export function strategyContextFromEmpire(
     covertPoints: army.covertPoints,
     effectiveness: army.effectiveness,
     researchPoints: empire.research?.accumulatedPoints ?? 0,
-    unlockedTechIds: empire.research?.unlockedTechIds ?? [],
+    unlockedTechIds: (empire.research?.unlockedTechIds as string[]) ?? [],
     loans,
     activeLoanCount: loans.length,
     supplyRateStation: empire.supplyRates?.rateStation ?? 0,

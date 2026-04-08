@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
 }
 
 enum TurnMode {
@@ -87,8 +87,8 @@ model Empire {
   /** Door-game mode: full turns (tick → actions → end_turn) consumed this calendar round. */
   fullTurnsUsedThisRound   Int     @default(0)
 
-  /** Queued messages shown on the defender's next turn situation report (ALERT lines). */
-  pendingDefenderAlerts String[] @default([])
+  /** Queued messages shown on the defender's next turn situation report (ALERT lines). Stored as JSON array (MySQL). */
+  pendingDefenderAlerts Json @default("[]")
 
   planets     Planet[]
   army        Army?
@@ -202,7 +202,7 @@ model Coalition {
   id        String   @id @default(cuid())
   name      String   @unique
   leaderId  String
-  memberIds String[] @default([])
+  memberIds Json @default("[]")
   maxMembers Int     @default(5)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -241,7 +241,7 @@ model Research {
   empireId          String   @unique
   empire            Empire   @relation(fields: [empireId], references: [id], onDelete: Cascade)
   accumulatedPoints Int      @default(0)
-  unlockedTechIds   String[] @default([])
+  unlockedTechIds   Json @default("[]")
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 }
@@ -334,13 +334,13 @@ model GameSession {
   /** Admin-staged galaxy: no turn timer / no actions until first human joins. */
   waitingForHuman     Boolean  @default(false)
 
-  playerNames  String[]
+  playerNames  Json @default("[]")
   totalTurns   Int      @default(100)
   status       String   @default("active")
   winnerId     String?
   winnerName   String?
   finalScores  Json?
-  log          Json[]   @default([])
+  log          Json     @default("[]")
   startedAt    DateTime @default(now())
   finishedAt   DateTime?
 
@@ -353,4 +353,34 @@ model GameSession {
 
   players    Player[]
   gameEvents GameEvent[]
+}
+
+/** One row per GameSession — used for MySQL FOR UPDATE NOWAIT advisory-lock equivalent. */
+model SessionLock {
+  sessionId String   @id
+  lockedAt  DateTime @default(now())
+}
+
+/**
+ * Door-game (simultaneous) AI turn job queue.
+ * Web tier inserts pending rows; the ai-worker process claims and executes them.
+ * Uses SELECT … FOR UPDATE SKIP LOCKED so multiple workers never collide.
+ */
+model AiTurnJob {
+  id          String    @id @default(cuid())
+  sessionId   String
+  playerId    String
+  /** pending | claimed | done | failed */
+  status      String    @default("pending")
+  /** Unique ID of the worker instance that claimed this job. */
+  claimedBy   String?
+  claimedAt   DateTime?
+  completedAt DateTime?
+  /** { success, ms } on done; { error } on failed. */
+  result      Json?
+  createdAt   DateTime  @default(now())
+
+  @@index([status, createdAt])
+  @@index([sessionId, status])
+  @@index([playerId, status])
 }

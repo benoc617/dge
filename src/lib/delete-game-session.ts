@@ -23,6 +23,8 @@ export async function deleteGameSession(sessionId: string): Promise<boolean> {
   const empireIds = empires.map((e) => e.id);
 
   await prisma.$transaction(async (tx) => {
+    await tx.aiTurnJob.deleteMany({ where: { sessionId } });
+    await tx.sessionLock.deleteMany({ where: { sessionId } });
     await tx.gameEvent.deleteMany({ where: { gameSessionId: sessionId } });
 
     if (playerIds.length === 0) {
@@ -62,11 +64,12 @@ export async function deleteGameSession(sessionId: string): Promise<boolean> {
 
       const coalitions = await tx.coalition.findMany();
       for (const c of coalitions) {
+        const memberIds = c.memberIds as string[];
         const touches =
-          empireIds.includes(c.leaderId) || c.memberIds.some((id) => empireIds.includes(id));
+          empireIds.includes(c.leaderId) || memberIds.some((id) => empireIds.includes(id));
         if (!touches) continue;
 
-        const newMembers = c.memberIds.filter((id) => !empireIds.includes(id));
+        const newMembers = memberIds.filter((id) => !empireIds.includes(id));
         if (newMembers.length === 0) {
           await tx.coalition.delete({ where: { id: c.id } });
           continue;

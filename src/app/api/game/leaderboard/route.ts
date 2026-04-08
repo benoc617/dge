@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { CIVIL_STATUS_NAMES } from "@/lib/game-constants";
 import { logSrxTiming, msElapsed } from "@/lib/srx-timing";
+import { getCachedLeaderboard } from "@/lib/game-state-service";
 
 export async function GET(req: NextRequest) {
   const tRoute = performance.now();
@@ -23,34 +24,40 @@ export async function GET(req: NextRequest) {
   }
 
   const tEmp0 = performance.now();
-  const empires = await prisma.empire.findMany({
-    where: {
-      turnsLeft: { gt: 0 },
-      ...(sessionId ? { player: { gameSessionId: sessionId } } : {}),
-    },
-    include: {
-      player: { select: { name: true, isAI: true } },
-      planets: { select: { type: true } },
-      army: { select: { soldiers: true, fighters: true, lightCruisers: true, heavyCruisers: true } },
-    },
-    orderBy: { netWorth: "desc" },
-  });
 
-  const leaderboard = empires.map((e, i) => ({
-    rank: i + 1,
-    name: e.player.name,
-    isAI: e.player.isAI,
-    netWorth: e.netWorth,
-    population: e.population,
-    planets: e.planets.length,
-    turnsPlayed: e.turnsPlayed,
-    civilStatus: CIVIL_STATUS_NAMES[e.civilStatus] ?? "Unknown",
-    isProtected: e.isProtected,
-    protectionTurns: e.protectionTurns,
-    military: e.army
-      ? e.army.soldiers + e.army.fighters * 2 + e.army.lightCruisers * 4 + e.army.heavyCruisers * 10
-      : 0,
-  }));
+  async function fetchLeaderboard() {
+    const empires = await prisma.empire.findMany({
+      where: {
+        turnsLeft: { gt: 0 },
+        ...(sessionId ? { player: { gameSessionId: sessionId } } : {}),
+      },
+      include: {
+        player: { select: { name: true, isAI: true } },
+        planets: { select: { type: true } },
+        army: { select: { soldiers: true, fighters: true, lightCruisers: true, heavyCruisers: true } },
+      },
+      orderBy: { netWorth: "desc" },
+    });
+    return empires.map((e, i) => ({
+      rank: i + 1,
+      name: e.player.name,
+      isAI: e.player.isAI,
+      netWorth: e.netWorth,
+      population: e.population,
+      planets: e.planets.length,
+      turnsPlayed: e.turnsPlayed,
+      civilStatus: CIVIL_STATUS_NAMES[e.civilStatus] ?? "Unknown",
+      isProtected: e.isProtected,
+      protectionTurns: e.protectionTurns,
+      military: e.army
+        ? e.army.soldiers + e.army.fighters * 2 + e.army.lightCruisers * 4 + e.army.heavyCruisers * 10
+        : 0,
+    }));
+  }
+
+  const leaderboard = sessionId
+    ? await getCachedLeaderboard(sessionId, fetchLeaderboard)
+    : await fetchLeaderboard();
 
   logSrxTiming("leaderboard_get", {
     playerName,
@@ -58,7 +65,7 @@ export async function GET(req: NextRequest) {
     resolveSessionMs,
     empiresQueryMs: msElapsed(tEmp0),
     routeTotalMs: msElapsed(tRoute),
-    rowCount: empires.length,
+    rowCount: leaderboard.length,
   });
 
   return NextResponse.json({ leaderboard });

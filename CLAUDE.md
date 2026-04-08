@@ -80,12 +80,12 @@ If a command fails on the host, **do not** treat that as the project failing unt
 
 **Agents (Claude Code, Cursor, etc.):** do **not** launch `next dev`, `npm run dev`, or `npm start` on the host unless the user **explicitly** asks for a host-only run. Starting the dev server outside Docker conflicts with the intended setup and can bind port 3000 while pointing at the wrong `DATABASE_URL`.
 
-**Agents:** use **`docker compose exec app npx prisma …`** for `db push` and `generate` so the client matches the container. Humans may use the host Prisma CLI with **`DATABASE_URL`** → **`localhost:5433`** (see README); agents should still prefer `exec` for consistency. No migration files — use `prisma db push` to sync `schema.prisma` directly to the DB.
+**Agents:** use **`docker compose exec app npx prisma …`** for `db push` and `generate` so the client matches the container. Humans may use the host Prisma CLI with **`DATABASE_URL`** → **`localhost:3306`** (see README); agents should still prefer `exec` for consistency. No migration files — use `prisma db push` to sync `schema.prisma` directly to the DB.
 
 ## Commands
 
 ```bash
-npm run docker:up    # Docker Compose: Postgres + Next (pre-built) — primary way to run the app
+npm run docker:up    # Docker Compose: MySQL + Next (pre-built) — primary way to run the app
 npm run docker:dev:redeploy  # docker compose up --build -d — rebuild app image from repo, start stack
 npm run docker:reset-node-modules  # Legacy volume cleanup + docker compose build --no-cache app + up -d
 npm run deploy       # docker compose build app && up -d — apply code changes without full stack recreate
@@ -200,8 +200,8 @@ The **game-flow** AI test uses **one** AI opponent and a long timeout for Gemini
 
 This is the **canonical** environment for running **Next.js** in this repo (see **Next.js dev server (Docker only)** above).
 
-- **`docker-compose.yml`** + **`Dockerfile.dev`**: PostgreSQL + **pre-built Next.js** (`next build` at image build time → `next start` at runtime). The **app image** **`COPY`s the repo** and runs **`next build`** — **no source bind mount**, no HMR/Turbopack file watcher. Rebuild to pick up changes: **`npm run deploy`** or **`docker compose build app && docker compose up -d app`**. **`node_modules`** and **`.next`** live in the container filesystem (not host-mounted). **`scripts/docker-entrypoint-dev.sh`** runs **`npm ci`** if **`lightningcss`** is missing (rare partial install).
-- Postgres is published on **host port 5433** (avoids clashing with a local Postgres on 5432). Inside Compose, the app uses `DATABASE_URL=...@postgres:5432/srx`.
+- **`docker-compose.yml`** + **`Dockerfile.dev`**: MySQL 8.4 + **pre-built Next.js** (`next build` at image build time → `next start` at runtime). The **app image** **`COPY`s the repo** and runs **`next build`** — **no source bind mount**, no HMR/Turbopack file watcher. Rebuild to pick up changes: **`npm run deploy`** or **`docker compose build app && docker compose up -d app`**. **`node_modules`** and **`.next`** live in the container filesystem (not host-mounted). **`scripts/docker-entrypoint-dev.sh`** runs **`npm ci`** if **`lightningcss`** is missing (rare partial install).
+- MySQL is published on **host port 3306**. Inside Compose, the app uses `DATABASE_URL=mysql://srx:srx@mysql:3306/srx`.
 - **`scripts/docker-entrypoint-dev.sh`**: starts as root to **`chown -R node:node /app`** (image layers are root-owned), then **`setpriv`** to **`node`**; sets **`HOME=/home/node`** and **`npm_config_cache`** so **`npm ci`** / **`npx`** do not use **`/root/.npm`**. Then `prisma generate`, `db push`, then `next start --hostname 0.0.0.0`.
 - Optional **`.env`** is merged via `env_file` (`required: false`) for `GEMINI_*`, admin vars, etc.; `DATABASE_URL` in compose overrides for the app container.
 
@@ -209,10 +209,8 @@ This is the **canonical** environment for running **Next.js** in this repo (see 
 
 Requires a `.env` file (not committed) with:
 ```
-# Host Node + local Postgres on default port:
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/srx"
-# If Postgres is only the Compose service on host port 5433:
-# DATABASE_URL="postgresql://postgres:postgres@localhost:5433/srx"
+# Host Node + local MySQL (or Compose MySQL on host port 3306):
+DATABASE_URL="mysql://srx:srx@localhost:3306/srx"
 GEMINI_API_KEY="..."          # or set in shell env; shell takes precedence
 GEMINI_MODEL="gemini-2.5-flash"  # optional, defaults to gemini-2.5-flash
 GEMINI_TIMEOUT_MS="60000"     # optional; max wait per AI Gemini call (ms), default 60000, clamped 1000–300000; then localFallback
@@ -227,9 +225,9 @@ INITIAL_ADMIN_PASSWORD="srxpass"
 # ADMIN_SESSION_SECRET="..."  # optional; defaults align with INITIAL_ADMIN_PASSWORD
 ```
 
-PostgreSQL runs via Docker: `docker run -d --name srx-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=srx -p 5432:5432 postgres:16-alpine`
+MySQL runs via Docker Compose (`docker compose up`). Standalone: `docker run -d --name srx-mysql -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=srx -e MYSQL_USER=srx -e MYSQL_PASSWORD=srx -p 3306:3306 mysql:8.4`
 
-Prisma 7 uses `prisma.config.ts` for datasource config (NOT in schema.prisma). The `PrismaClient` requires `@prisma/adapter-pg`.
+Prisma 7 uses `prisma.config.ts` for datasource config (NOT in schema.prisma). The `PrismaClient` requires `@prisma/adapter-mariadb`.
 
 ## Inspecting game state and logs (agents / debugging)
 
@@ -244,9 +242,9 @@ Use this when you need to verify what happened in a live or test DB (e.g. from C
 ### Database (recommended for session-scoped history)
 
 1. Load env: `cd` to repo root and `set -a && [ -f .env ] && . ./.env && set +a` (or rely on the shell’s existing `DATABASE_URL`).
-2. **Prisma Studio** — browse tables visually. **Agents:** `docker compose exec app npx prisma studio` (same DB and client as the app). Humans may use host `npx prisma studio` with `DATABASE_URL` → `localhost:5433` when Compose owns Postgres.
-3. **Ad-hoc script** — `npx tsx -e '...'` with `PrismaClient` + `@prisma/adapter-pg` + `pg` `Pool` (same pattern as `src/lib/prisma.ts`). Example: `GameSession.findFirst({ where: { galaxyName: "..." } })`, then `TurnLog.findMany({ where: { player: { gameSessionId: sid } }, orderBy: { createdAt: "asc" } })`.
-4. **Raw SQL** — `psql "$DATABASE_URL"` if `psql` is installed.
+2. **Prisma Studio** — browse tables visually. **Agents:** `docker compose exec app npx prisma studio` (same DB and client as the app). Humans may use host `npx prisma studio` with `DATABASE_URL` → `localhost:3306` when Compose owns MySQL.
+3. **Ad-hoc script** — `npx tsx -e '...'` with `PrismaClient` + `@prisma/adapter-mariadb` (same pattern as `src/lib/prisma.ts`). Example: `GameSession.findFirst({ where: { galaxyName: "..." } })`, then `TurnLog.findMany({ where: { player: { gameSessionId: sid } }, orderBy: { createdAt: "asc" } })`.
+4. **Raw SQL** — `mysql -u srx -psrx srx` (or `mysql "$DATABASE_URL"`) if `mysql` client is installed.
 
 ### What the logs mean
 
@@ -322,7 +320,7 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - `src/lib/create-ai-players.ts` — `createAIPlayersForSession` (named-list, random persona each time) and `createRandomAIPlayersForSession` (count-based, random name + random persona). AI names come from `AI_NAME_POOL` (10 names); strategies from `AI_STRATEGY_POOL` (7 personas: optimal, turtle, economist, researcher, warlord, diplomat, spymaster). Names and strategies are **never fixed pairs** — each creation randomizes independently so players never know an AI's strategy.
 - `src/lib/ai-process-move.ts` — `processAiMoveOrSkip`: runs `processAction` for the AI’s chosen action; if `success: false`, runs `end_turn` with `skippedAfterInvalid` in `logMeta` (parity with human failed attempt + skip).
 - `src/lib/ai-runner.ts` — `runAISequence(sessionId)` walks through consecutive AI turns in order, stopping when a human is reached. Called by the action route after each player turn.
-- `src/lib/prisma.ts` — Prisma 7 client with `@prisma/adapter-pg` (`DATABASE_URL` from env only).
+- `src/lib/prisma.ts` — Prisma 7 client with `@prisma/adapter-mariadb` (`DATABASE_URL` from env only).
 - `src/lib/system-settings.ts` — masked Gemini key preview for admin settings API (never return raw secrets).
 - `scripts/simulate.ts` — CLI runner for the simulation engine. **`--reset` wipes ALL game data** (sessions, players, scores) — not just simulation artifacts. `--repeat N` only cleans simulation-specific players (`Sim_*`) between runs.
 

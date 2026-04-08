@@ -1,12 +1,12 @@
 # Solar Realms Extreme (SRX)
 
-A turn-based galactic empire management game — a modern reimagining of the BBS-era classic [Solar Realms Elite](https://breakintochat.com/wiki/Solar_Realms_Elite). Built with Next.js, Prisma, and PostgreSQL, styled with a monochrome terminal/BBS aesthetic.
+A turn-based galactic empire management game — a modern reimagining of the BBS-era classic [Solar Realms Elite](https://breakintochat.com/wiki/Solar_Realms_Elite). Built with Next.js, Prisma, and MySQL, styled with a monochrome terminal/BBS aesthetic.
 
 ## Quick Start
 
 ### Option A — Docker Compose (recommended)
 
-Runs **PostgreSQL** and the **Next.js dev server** in containers. The app **image** includes a copy of the repo at build time — there is **no bind mount**. After you change code, run **`npm run deploy`** (or **`npm run docker:dev:redeploy`**) so Docker rebuilds the image and recreates the app container.
+Runs **MySQL** and the **Next.js dev server** in containers. The app **image** includes a copy of the repo at build time — there is **no bind mount**. After you change code, run **`npm run deploy`** (or **`npm run docker:dev:redeploy`**) so Docker rebuilds the image and recreates the app container.
 
 ```bash
 # Optional: API keys and admin overrides (DATABASE_URL is set inside Compose for the app)
@@ -30,10 +30,9 @@ docker compose up --build
 ```
 
 - **App:** [http://localhost:3000](http://localhost:3000) — Operators: [http://localhost:3000/admin](http://localhost:3000/admin) · [http://localhost:3000/admin/users](http://localhost:3000/admin/users) (accounts)
-- **Postgres on the host:** `localhost:5433` (user `postgres`, password `postgres`, database `srx`) — use this in `DATABASE_URL` if you run **Prisma CLI on the host** (`db push`, `studio`) against the same database.
+- **MySQL on the host:** `localhost:3306` (user `srx`, password `srx`, database `srx`) — use this in `DATABASE_URL` if you run **Prisma CLI on the host** (`db push`, `studio`) against the same database.
 - On startup the **app** container runs `prisma db push` (sync schema to DB). No migration files — schema changes go directly to `schema.prisma` and are pushed.
-- **First page load in dev** can take **10–30s** while Turbopack compiles the large client bundle; the tab may spin until that finishes. The entrypoint triggers a background `GET /` so the route is often warm before you open the browser — if it still spins, wait or reload once after the container logs show `GET / warm`.
-- To seed **SystemSettings** from your `.env` into the DB (for `/admin` overrides): **`docker compose exec app npm run seed:system-settings`** (recommended; matches the app container). Alternative on the host: `DATABASE_URL="postgresql://postgres:postgres@localhost:5433/srx" npm run seed:system-settings`
+- To seed **SystemSettings** from your `.env` into the DB (for `/admin` overrides): **`docker compose exec app npm run seed:system-settings`** (recommended; matches the app container). Alternative on the host: `DATABASE_URL="mysql://srx:srx@localhost:3306/srx" npm run seed:system-settings`
 
 Stop: `docker compose down` · Logs: `npm run docker:logs`
 
@@ -46,12 +45,13 @@ Compose sets **`SRX_DOCKER=1`** so Turbopack’s dev filesystem cache is **off**
 ### Option B — Node on the host
 
 ```bash
-docker run -d --name srx-postgres \
-  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=srx \
-  -p 5432:5432 postgres:16-alpine
+docker run -d --name srx-mysql \
+  -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=srx \
+  -e MYSQL_USER=srx -e MYSQL_PASSWORD=srx \
+  -p 3306:3306 mysql:8.4
 
 cat > .env <<EOF
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/srx"
+DATABASE_URL="mysql://srx:srx@localhost:3306/srx"
 GEMINI_API_KEY="your-key-here"
 GEMINI_MODEL="gemini-2.5-flash"
 # GEMINI_MAX_CONCURRENT="4"
@@ -129,7 +129,7 @@ Preset strategies (default roster cycles one per simulated player): `balanced`, 
 | Technology | Role |
 |------------|------|
 | Next.js 16 (App Router) | UI and API routes |
-| Prisma 7 + `@prisma/adapter-pg` | PostgreSQL ORM |
+| Prisma 7 + `@prisma/adapter-mariadb` | MySQL ORM |
 | Google Gemini (2.5 Flash default) | AI opponent decisions |
 | TypeScript | Entire codebase |
 | Tailwind CSS | Terminal/BBS aesthetic |
@@ -198,7 +198,7 @@ scripts/
 prisma/
   schema.prisma                      # Database schema
 Dockerfile.dev                       # Dev image: npm ci, COPY repo, prisma generate; no runtime bind mount
-docker-compose.yml                   # Postgres + Next dev (app source baked into image; Postgres data volume only)
+docker-compose.yml                   # MySQL + Next.js (app source baked into image; MySQL data volume only)
 .dockerignore                        # Build context exclusions
 ```
 
@@ -207,7 +207,7 @@ docker-compose.yml                   # Postgres + Next dev (app source baked int
 **Automation (Cursor, Claude Code, CI-style scripts):** do **not** run `npm test`, `npm run lint`, `npm run typecheck`, `npm run build`, or other verification **on the host** — use the Compose **`app`** container (`npm run docker:*` or `docker compose exec app …`). See **`CLAUDE.md`** → **Container-only npm (mandatory for agents)** and root **`AGENTS.md`**.
 
 ```bash
-npm run docker:up        # Compose: Postgres + dev server in Docker (see Quick Start) — primary workflow
+npm run docker:up        # Compose: MySQL + dev server in Docker (see Quick Start) — primary workflow
 npm run docker:down      # Stop Compose stack
 npm run docker:logs      # Follow `app` container logs
 npm run deploy           # docker compose build app + up -d (apply code changes to the running dev server)
@@ -218,7 +218,7 @@ docker compose exec app npx prisma studio   # DB GUI (inside container; same DB 
 docker compose exec app npx prisma db push        # Sync schema to DB (no migration files)
 ```
 
-**Host-only** (optional; not the default for agents): `npm run dev`, `npm run build`, `npm run lint`, `npx prisma …` on the host with `DATABASE_URL` pointing at **localhost:5433** when Postgres is from Compose — can work for humans, but optional native deps (e.g. Vitest) may not match Docker.
+**Host-only** (optional; not the default for agents): `npm run dev`, `npm run build`, `npm run lint`, `npx prisma …` on the host with `DATABASE_URL` pointing at **localhost:3306** when MySQL is from Compose — can work for humans, but optional native deps (e.g. Vitest) may not match Docker.
 
 ### Testing
 

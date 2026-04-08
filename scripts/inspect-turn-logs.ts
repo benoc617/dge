@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaMariaDb } from "@prisma/adapter-mariadb";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -8,7 +8,16 @@ if (!connectionString) {
   process.exit(1);
 }
 
-const prisma = new PrismaClient({ adapter: new PrismaPg(connectionString) });
+const url = new URL(connectionString);
+const prisma = new PrismaClient({
+  adapter: new PrismaMariaDb({
+    host: url.hostname,
+    port: url.port ? parseInt(url.port, 10) : 3306,
+    user: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    database: url.pathname.slice(1),
+  }),
+});
 
 const take = Math.min(50, parseInt(process.argv[2] ?? "30", 10) || 30);
 
@@ -42,7 +51,7 @@ async function main() {
   });
   console.log("\n--- Active GameSession (sample) ---\n");
   for (const s of sessions) {
-    console.log(`${s.galaxyName ?? "(unnamed)"}  players: ${s.playerNames.join(", ")}`);
+    console.log(`${s.galaxyName ?? "(unnamed)"}  players: ${Array.isArray(s.playerNames) ? (s.playerNames as string[]).join(", ") : ""}`);
   }
 }
 

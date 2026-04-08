@@ -1374,7 +1374,7 @@ export interface PrismaEmpireShape {
     soldiersLevel: number; fightersLevel: number; stationsLevel: number;
     lightCruisersLevel: number; heavyCruisersLevel: number;
   };
-  research?: { accumulatedPoints: number; unlockedTechIds: string[] } | null;
+  research?: { accumulatedPoints: number; unlockedTechIds: string[] | unknown } | null;
   supplyRates?: {
     rateSoldier: number; rateFighter: number; rateStation: number; rateHeavyCruiser: number;
     rateCarrier: number; rateGeneral: number; rateCovert: number; rateCredits: number;
@@ -1409,7 +1409,7 @@ export function empireFromPrisma(data: PrismaEmpireShape, playerName?: string): 
     })),
     army: { ...data.army },
     research: data.research
-      ? { accumulatedPoints: data.research.accumulatedPoints, unlockedTechIds: [...data.research.unlockedTechIds] }
+      ? { accumulatedPoints: data.research.accumulatedPoints, unlockedTechIds: [...(data.research.unlockedTechIds as string[])] }
       : { accumulatedPoints: 0, unlockedTechIds: [] },
     supplyRates: data.supplyRates
       ? { ...data.supplyRates }

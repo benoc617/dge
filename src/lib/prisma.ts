@@ -1,35 +1,35 @@
 import { PrismaClient } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
-import { Pool } from "pg";
+import { PrismaMariaDb } from "@prisma/adapter-mariadb";
 
 const connectionString = process.env.DATABASE_URL!;
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
-  pgPool: Pool | undefined;
+  mariadbAdapter: PrismaMariaDb | undefined;
 };
 
 /**
- * Single shared pool for the adapter. Passing a connection string into `PrismaPg` creates an
- * internal pool per adapter lifecycle; using one `Pool` avoids extra churn and helps the `pg`
- * driver avoid overlapping queries on a single client.
+ * Single shared adapter (and its internal connection pool) reused across hot-reloads in dev.
+ * PrismaMariaDb manages the mariadb connection pool internally.
  */
-function getPool(): Pool {
-  if (!globalForPrisma.pgPool) {
-    globalForPrisma.pgPool = new Pool({
-      connectionString,
-      max: 20,
-      idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 10_000,
+function getAdapter(): PrismaMariaDb {
+  if (!globalForPrisma.mariadbAdapter) {
+    const url = new URL(connectionString);
+    globalForPrisma.mariadbAdapter = new PrismaMariaDb({
+      host: url.hostname,
+      port: url.port ? parseInt(url.port, 10) : 3306,
+      user: decodeURIComponent(url.username),
+      password: decodeURIComponent(url.password),
+      database: url.pathname.slice(1),
+      connectionLimit: 20,
     });
   }
-  return globalForPrisma.pgPool;
+  return globalForPrisma.mariadbAdapter;
 }
 
 function createClient() {
-  const adapter = new PrismaPg(getPool());
   return new PrismaClient({
-    adapter,
+    adapter: getAdapter(),
     log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
   });
 }

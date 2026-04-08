@@ -1,11 +1,12 @@
-import { getDb, runOutsideTransaction } from "@/lib/db-context";
+import { getDb } from "@/lib/db-context";
 import { runAndPersistTick, processAction, runEndgameSettlementTick, type TurnReport } from "@/lib/game-engine";
+import { invalidatePlayer, invalidateLeaderboard } from "@/lib/game-state-service";
+import { enqueueAiTurnsForSession } from "@/lib/ai-job-queue";
 import {
   getAIMoveDecision,
   type DoorGameAIMoveDecision,
 } from "@/lib/ai-runner";
 import { processAiMoveOrSkip } from "@/lib/ai-process-move";
-import { shouldLogAiTiming } from "@/lib/gemini";
 import { resolveDoorAiRuntimeSettings } from "@/lib/door-ai-runtime-settings";
 
 /** Default door-game AI caps when no DB row (matches prior constants; configurable via admin / env). */
@@ -128,6 +129,7 @@ export async function closeFullTurn(
     await runEndgameSettlementTick(playerId);
   }
 
+  void invalidatePlayer(playerId);
   await tryRollRound(sessionId, options);
 }
 
@@ -278,15 +280,15 @@ export async function tryRollRound(
     },
   });
 
-  // New calendar day: kick AI drain without awaiting — must NOT run inside withCommitLock’s
-  // interactive transaction (Prisma default 5s timeout; AI/Gemini can exceed it and return 500 P2028).
-  // runDoorGameAITurns serializes via doorAiInFlight; route after() also schedules it after human actions.
+  // New calendar day: enqueue AI turn jobs — the ai-worker process claims and runs them.
+  // This is fire-and-forget; the web process never blocks on AI work.
   if (options?.scheduleAiDrain !== false) {
-    void runDoorGameAITurns(sessionId).catch((err) => {
-      console.error("[door-game] runDoorGameAITurns after day roll", sessionId, err);
+    void enqueueAiTurnsForSession(sessionId).catch((err) => {
+      console.error("[door-game] enqueueAiTurnsForSession after day roll", sessionId, err);
     });
   }
 
+  void invalidateLeaderboard(sessionId);
   return true;
 }
 
@@ -312,21 +314,24 @@ export async function decideDoorGameAIMove(
 
 /**
  * Persist the chosen move (or timeout/skip) and close the door-game full turn.
+ * Pass `{ scheduleAiDrain: false }` when called from the ai-worker to prevent re-enqueueing
+ * (the worker handles cascading itself after each job completes).
  */
 export async function applyDoorGameAIMove(
   playerId: string,
   move: DoorGameAIMoveDecision,
   sessionId: string,
+  options?: { scheduleAiDrain?: boolean },
 ): Promise<void> {
   if (!move) {
     await processAction(playerId, "end_turn", undefined, doorEndTurnOpts);
-    await closeFullTurn(playerId, sessionId);
+    await closeFullTurn(playerId, sessionId, options);
     return;
   }
 
   if (move.action === "end_turn") {
     await processAction(playerId, "end_turn", undefined, doorEndTurnOpts);
-    await closeFullTurn(playerId, sessionId);
+    await closeFullTurn(playerId, sessionId, options);
     return;
   }
 
@@ -350,19 +355,19 @@ export async function applyDoorGameAIMove(
   // Invalid action → skip path runs processAction(end_turn) but never hit closeFullTurn; without this
   // the empire stays turnOpen with fullTurnsUsed stuck at 0 and the galaxy never advances.
   if (out.skipped && out.finalResult.success) {
-    await closeFullTurn(playerId, sessionId);
+    await closeFullTurn(playerId, sessionId, options);
     return;
   }
 
   if (!out.skipped && out.finalResult.success) {
-    await doorGameAutoCloseFullTurnAfterAction(playerId, sessionId);
+    await doorGameAutoCloseFullTurnAfterAction(playerId, sessionId, options);
     return;
   }
 
   // Rare: invalid action and end_turn skip both failed — force close so the round cannot stall.
   if (out.skipped && !out.finalResult.success) {
     await processAction(playerId, "end_turn", undefined, doorEndTurnOpts);
-    await closeFullTurn(playerId, sessionId);
+    await closeFullTurn(playerId, sessionId, options);
   }
 }
 
@@ -388,7 +393,16 @@ export async function ensureDoorGameFullTurnOpen(playerId: string): Promise<bool
   return true;
 }
 
-async function runOneDoorGameAI(playerId: string): Promise<void> {
+/**
+ * Run a single door-game AI turn: open the full turn slot, pick a move, apply it, and close.
+ * Exported so the ai-worker process can call this directly after claiming a job.
+ * Pass `{ scheduleAiDrain: false }` from the worker to prevent re-enqueueing inside
+ * closeFullTurn/tryRollRound — the worker handles cascading after each job completes.
+ */
+export async function runOneDoorGameAI(
+  playerId: string,
+  options?: { scheduleAiDrain?: boolean },
+): Promise<void> {
   const player = await getDb().player.findUnique({
     where: { id: playerId },
     include: { empire: true, gameSession: true },
@@ -403,106 +417,10 @@ async function runOneDoorGameAI(playerId: string): Promise<void> {
     await openFullTurn(playerId);
   }
 
-  const move = await decideDoorGameAIMove(playerId);
-  await applyDoorGameAIMove(playerId, move, sessionId);
+  const rt = await resolveDoorAiRuntimeSettings();
+  const move = await decideDoorGameAIMove(playerId, rt.doorAiMoveTimeoutMs);
+  await applyDoorGameAIMove(playerId, move, sessionId, options);
 }
 
-/** Serialize concurrent runs per session (status kick + action `after()` may overlap). */
-const doorAiInFlight = new Map<string, Promise<void>>();
-
-/**
- * Run AI empires until none owe daily full turns (or guard limit). Used after a human acts and
- * after calendar day rollover (batch at new day). When called from `tryRollRound`, does not use
- * `doorAiInFlight` (see `runDoorGameAITurns`).
- */
-async function drainDoorGameAiTurns(sessionId: string): Promise<void> {
-  const session = await getDb().gameSession.findUnique({
-    where: { id: sessionId },
-    select: { turnMode: true, waitingForHuman: true, actionsPerDay: true },
-  });
-  if (!session || session.turnMode !== "simultaneous" || session.waitingForHuman) return;
-
-  let guard = 0;
-  while (guard++ < 500) {
-    await tryRollRound(sessionId);
-
-    const rt = await resolveDoorAiRuntimeSettings();
-    const { doorAiDecideBatchSize, doorAiMoveTimeoutMs } = rt;
-
-    const batch = await getDb().player.findMany({
-      where: {
-        gameSessionId: sessionId,
-        isAI: true,
-        empire: {
-          turnsLeft: { gt: 0 },
-          fullTurnsUsedThisRound: { lt: session.actionsPerDay },
-        },
-      },
-      orderBy: [
-        { empire: { fullTurnsUsedThisRound: "asc" } },
-        { turnOrder: "asc" },
-      ],
-      take: doorAiDecideBatchSize,
-      include: { empire: true },
-    });
-
-    if (batch.length === 0) break;
-
-    const ready: string[] = [];
-    for (const p of batch) {
-      const ok = await ensureDoorGameFullTurnOpen(p.id);
-      if (ok) ready.push(p.id);
-    }
-
-    if (ready.length === 0) {
-      await runOneDoorGameAI(batch[0].id);
-      continue;
-    }
-
-    const tDecide0 = performance.now();
-    const decisions = await Promise.all(
-      ready.map((id) => decideDoorGameAIMove(id, doorAiMoveTimeoutMs)),
-    );
-    const parallelDecideMs = performance.now() - tDecide0;
-
-    const tApply0 = performance.now();
-    for (let i = 0; i < ready.length; i++) {
-      await applyDoorGameAIMove(ready[i], decisions[i], sessionId);
-    }
-    const serialApplyMs = performance.now() - tApply0;
-
-    if (shouldLogAiTiming()) {
-      console.info(
-        "[door-game]",
-        JSON.stringify({
-          event: "doorWave",
-          sessionId,
-          batchSize: ready.length,
-          parallelDecideMs: Math.round(parallelDecideMs),
-          serialApplyMs: Math.round(serialApplyMs),
-        }),
-      );
-    }
-  }
-}
-
-/**
- * After a human closes a full turn, advance AI empires that still have daily turns remaining.
- * Call from `after()` so Next.js does not drop the work when the HTTP handler returns.
- *
- * Uses `runOutsideTransaction` so `getDb()` returns the root Prisma client — `after()` callbacks
- * inherit the parent's `AsyncLocalStorage` context, which may still hold a committed (dead)
- * interactive-transaction client from `withCommitLock`.
- */
-export async function runDoorGameAITurns(sessionId: string): Promise<void> {
-  const existing = doorAiInFlight.get(sessionId);
-  if (existing) return existing;
-
-  const p = runOutsideTransaction(() => drainDoorGameAiTurns(sessionId)).finally(() => {
-    doorAiInFlight.delete(sessionId);
-  });
-  doorAiInFlight.set(sessionId, p);
-  return p;
-}
-
-export { withCommitLock, GalaxyBusyError, hashSessionIdToBigInt } from "@/lib/db-context";
+export { withCommitLock, GalaxyBusyError } from "@/lib/db-context";
+export { enqueueAiTurnsForSession } from "@/lib/ai-job-queue";

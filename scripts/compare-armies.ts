@@ -1,8 +1,17 @@
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaMariaDb } from "@prisma/adapter-mariadb";
 
-const prisma = new PrismaClient({ adapter: new PrismaPg(process.env.DATABASE_URL!) });
+const url = new URL(process.env.DATABASE_URL!);
+const prisma = new PrismaClient({
+  adapter: new PrismaMariaDb({
+    host: url.hostname,
+    port: url.port ? parseInt(url.port, 10) : 3306,
+    user: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    database: url.pathname.slice(1),
+  }),
+});
 
 /** Mirrors leaderboard Mil column */
 function leaderboardMil(a: {

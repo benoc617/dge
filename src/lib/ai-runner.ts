@@ -105,7 +105,7 @@ async function buildAIMoveContext(player: PlayerWithEmpireForAI) {
     } : undefined,
     research: empire.research ? {
       accumulatedPoints: empire.research.accumulatedPoints,
-      unlockedTechIds: empire.research.unlockedTechIds,
+      unlockedTechIds: empire.research.unlockedTechIds as string[],
     } : undefined,
   };
 
@@ -130,8 +130,14 @@ export async function getAIMoveDecision(playerId: string): Promise<{
 
   const { ctx, eventStrings, empireState } = await buildAIMoveContext(player as PlayerWithEmpireForAI);
 
+  // aiPersona is stored as a persona KEY (e.g. "economist"), not the full prompt text.
+  // Look it up in AI_PERSONAS; fall back to economist if unset or unrecognised.
+  const personaPrompt =
+    (player.aiPersona && AI_PERSONAS[player.aiPersona as keyof typeof AI_PERSONAS]) ||
+    AI_PERSONAS.economist;
+
   const move = await getAIMove(
-    player.aiPersona ?? AI_PERSONAS.economist,
+    personaPrompt,
     empireState,
     eventStrings,
     ctx,
@@ -151,7 +157,12 @@ export type DoorGameAIMoveDecision = Awaited<ReturnType<typeof getAIMoveDecision
 /**
  * Run a single AI player's turn: get their decision and execute it.
  */
-async function runOneAI(playerId: string, playerName: string, persona: string | null) {
+async function runOneAI(playerId: string, playerName: string, personaKeyOrPrompt: string | null) {
+  // aiPersona is stored as a KEY (e.g. "economist"). Expand to full prompt; fall back to economist.
+  const persona =
+    (personaKeyOrPrompt && AI_PERSONAS[personaKeyOrPrompt as keyof typeof AI_PERSONAS]) ||
+    AI_PERSONAS.economist;
+
   await runAndPersistTick(playerId);
 
   const player = await prisma.player.findUnique({
@@ -172,7 +183,7 @@ async function runOneAI(playerId: string, playerName: string, persona: string | 
 
     const tMove0 = performance.now();
     const move = await getAIMove(
-      persona ?? AI_PERSONAS.economist,
+      persona,
       empireState,
       eventStrings,
       ctx,
@@ -300,6 +311,7 @@ export async function runAISequence(gameSessionId: string): Promise<{ name: stri
       select: { aiPersona: true },
     });
 
+    // aiPersona is a persona key; runOneAI expands it to the full prompt.
     const result = await runOneAI(turn.currentPlayerId, turn.currentPlayerName, aiPlayer?.aiPersona ?? null);
     results.push({ name: result.name, action: result.action, message: result.message });
 

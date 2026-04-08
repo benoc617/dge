@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
       isYourTurn,
       currentTurnPlayer,
       maxPlayers: sess.maxPlayers,
-      playerCount: sess.playerNames.length,
+      playerCount: (sess.playerNames as string[]).length,
       waitingForHuman: sess.waitingForHuman === true,
     });
   }

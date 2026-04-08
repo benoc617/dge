@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
       } : undefined,
       research: player.empire.research ? {
         accumulatedPoints: player.empire.research.accumulatedPoints,
-        unlockedTechIds: player.empire.research.unlockedTechIds,
+        unlockedTechIds: player.empire.research.unlockedTechIds as string[],
       } : undefined,
     },
     eventMessages,
