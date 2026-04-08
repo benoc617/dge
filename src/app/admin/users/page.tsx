@@ -187,7 +187,7 @@ export default function AdminUsersPage() {
   if (!authed) {
     return (
       <main className="min-h-screen bg-black text-green-400 font-mono flex flex-col items-center justify-center px-4">
-        <h1 className="text-yellow-400 font-bold tracking-widest mb-6 text-lg">SRX ADMIN — USERS</h1>
+        <h1 className="text-yellow-400 font-bold tracking-widest mb-6 text-lg">DGE ADMIN — USERS</h1>
         <form onSubmit={handleLogin} className="border border-green-800 p-6 w-full max-w-sm space-y-3">
           <label className="text-green-700 text-xs block">Username</label>
           <input
@@ -223,7 +223,7 @@ export default function AdminUsersPage() {
   return (
     <main className="min-h-screen bg-black text-green-400 font-mono p-4">
       <div className="flex justify-between items-center border-b border-green-900 pb-2 mb-4">
-        <h1 className="text-yellow-400 font-bold tracking-widest text-sm">SRX ADMIN — USERS</h1>
+        <h1 className="text-yellow-400 font-bold tracking-widest text-sm">DGE ADMIN — USERS</h1>
         <div className="flex gap-3 text-xs items-center">
           <button
             type="button"
@@ -240,8 +240,11 @@ export default function AdminUsersPage() {
           >
             Log out
           </button>
+          <Link href="/admin/game-sessions" className="text-green-500 hover:text-green-300 border border-green-800 px-2 py-0.5">
+            Game Sessions
+          </Link>
           <Link href="/admin" className="text-green-700 hover:text-green-400">
-            Galaxies
+            Admin
           </Link>
           <Link href="/" className="text-green-700 hover:text-green-400">
             Game

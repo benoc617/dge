@@ -240,7 +240,7 @@ export default function Home() {
 
   // New game setup state
   const [setupPhase, setSetupPhase] = useState<
-    "login" | "signup" | "hub" | "join-game" | "create-galaxy"
+    "login" | "signup" | "game-select" | "hub" | "join-game" | "create-galaxy"
   >("login");
   const [aiCount, setAiCount] = useState(3);
   const [inputGalaxyName, setInputGalaxyName] = useState("");
@@ -521,7 +521,7 @@ export default function Home() {
       setAuthUser(data.user);
       setAuthGames(data.games);
       setInputName(data.user.username);
-      setSetupPhase("hub");
+      setSetupPhase("game-select");
       setLoading(false);
       return;
     }
@@ -1009,16 +1009,16 @@ export default function Home() {
       <main className="min-h-screen bg-black text-green-400 flex flex-col items-center justify-center font-mono">
         <div className="text-center mb-8">
           <pre className="text-yellow-400 text-xs leading-tight mb-2">{`
- ███████╗██████╗ ██╗  ██╗
- ██╔════╝██╔══██╗╚██╗██╔╝
- ███████╗██████╔╝ ╚███╔╝
- ╚════██║██╔══██╗ ██╔██╗
- ███████║██║  ██║██╔╝ ██╗
- ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝`}</pre>
+ ██████╗  ██████╗ ███████╗
+ ██╔══██╗██╔════╝ ██╔════╝
+ ██║  ██║██║  ███╗█████╗
+ ██║  ██║██║   ██║██╔══╝
+ ██████╔╝╚██████╔╝███████╗
+ ╚═════╝  ╚═════╝ ╚══════╝`}</pre>
           <h1 className="text-2xl font-bold tracking-widest text-yellow-400 mb-1">
-            SOLAR REALMS EXTREME
+            DOOR GAMES
           </h1>
-          <p className="text-green-600 text-sm tracking-widest">CONQUER THE GALAXY</p>
+          <p className="text-green-600 text-sm tracking-widest">TURN-BASED MULTIPLAYER</p>
         </div>
         <div className="border border-green-700 p-8 w-96 max-w-[95vw] bg-black/80">
           <label className="text-green-600 text-xs block mb-1">Username</label>
@@ -1075,7 +1075,7 @@ export default function Home() {
     return (
       <main className="min-h-screen bg-black text-green-400 flex flex-col items-center justify-center font-mono">
         <div className="text-center mb-6">
-          <h1 className="text-2xl font-bold tracking-widest text-yellow-400 mb-1">SOLAR REALMS EXTREME</h1>
+          <h1 className="text-2xl font-bold tracking-widest text-yellow-400 mb-1">DOOR GAMES</h1>
           <p className="text-green-600 text-sm tracking-widest">CREATE ACCOUNT</p>
         </div>
         <div className="border border-green-700 p-6 w-[420px] max-w-[95vw] bg-black/80 space-y-3">
@@ -1141,6 +1141,49 @@ export default function Home() {
             className="w-full text-center text-green-700 text-xs py-2 hover:text-green-500"
           >
             ← BACK TO LOGIN
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  // ─── GAME SELECTION ───
+  if (!playerName && setupPhase === "game-select" && authUser) {
+    return (
+      <main className="min-h-screen bg-black text-green-400 flex flex-col items-center justify-center font-mono py-8">
+        <div className="text-center mb-6">
+          <h1 className="text-2xl font-bold tracking-widest text-yellow-400 mb-1">DOOR GAMES</h1>
+          <p className="text-green-600 text-sm tracking-widest">SELECT A GAME</p>
+        </div>
+        <div className="w-[520px] max-w-[95vw] space-y-3">
+          <div className="text-green-700 text-xs border border-green-900 p-2 mb-2 font-normal">
+            Welcome back, <span className="text-green-400">{authUser.username}</span>.
+          </div>
+
+          {/* SRX game card */}
+          <button
+            onClick={() => setSetupPhase("hub")}
+            className="w-full border border-yellow-700 p-4 hover:bg-yellow-900/20 text-left group"
+          >
+            <div className="text-yellow-400 font-bold tracking-wider text-base group-hover:text-yellow-300">
+              SOLAR REALMS EXTREME
+            </div>
+            <p className="text-green-700 text-xs mt-1">
+              Turn-based galactic empire management. Up to 128 commanders, 100 turns,
+              sequential or simultaneous (door-game) play.
+            </p>
+            {authGames.length > 0 && (
+              <p className="text-green-600 text-xs mt-1.5">
+                {authGames.length} active session{authGames.length !== 1 ? "s" : ""}
+              </p>
+            )}
+          </button>
+
+          <button
+            onClick={logoutFromHub}
+            className="w-full text-center text-green-800 text-xs py-2 hover:text-green-600"
+          >
+            LOG OUT
           </button>
         </div>
       </main>
