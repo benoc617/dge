@@ -26,10 +26,16 @@
  */
 
 import "dotenv/config";
-import { runSimulation, printSimReport, snapshotsToCSV, type SimConfig, type SimStrategy, type SimResult } from "../src/lib/simulation";
+import {
+  runSimulation,
+  printSimReport,
+  snapshotsToCSV,
+  type SimStrategy,
+  type SimResult,
+  type TurnSnapshot,
+} from "../src/lib/simulation";
 import { runSessionSimulation, type SessionSimTurnMode } from "../src/lib/simulation-harness";
 import { prisma } from "../src/lib/prisma";
-import { setSeed } from "../src/lib/rng";
 import * as fs from "fs";
 
 function parseArgs(): {
@@ -297,12 +303,14 @@ async function main(): Promise<void> {
     console.log(`${"=".repeat(60)}\n`);
 
     if (opts.csv) {
-      const allSnaps = allResults.flatMap((r, i) =>
+      type SnapWithRun = TurnSnapshot & { run: number };
+      const allSnaps: SnapWithRun[] = allResults.flatMap((r, i) =>
         r.snapshots.map((s) => ({ ...s, run: i })),
       );
       const headers = "run,turn,player,credits,food,ore,fuel,population,netWorth,totalPlanets,soldiers,fighters,civilStatus,action,income,expenses,popNet";
-      const rows = allSnaps.map((s) =>
-        `${(s as any).run},${s.turn},${s.playerName},${s.credits},${s.food},${s.ore},${s.fuel},${s.population},${s.netWorth},${s.totalPlanets},${s.soldiers},${s.fighters},${s.civilStatus},${s.action},${s.income},${s.expenses},${s.popNet}`,
+      const rows = allSnaps.map(
+        (s) =>
+          `${s.run},${s.turn},${s.playerName},${s.credits},${s.food},${s.ore},${s.fuel},${s.population},${s.netWorth},${s.totalPlanets},${s.soldiers},${s.fighters},${s.civilStatus},${s.action},${s.income},${s.expenses},${s.popNet}`,
       );
       fs.writeFileSync(opts.csv, [headers, ...rows].join("\n"));
       console.log(`CSV exported to ${opts.csv}`);

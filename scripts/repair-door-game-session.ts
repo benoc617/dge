@@ -1,7 +1,8 @@
 #!/usr/bin/env npx tsx
 /**
  * Repair simultaneous (door-game) empires stuck after a bad AI skip path
- * (end_turn logged but closeFullTurn never ran → turnOpen stuck true).
+ * (end_turn logged but closeFullTurn never ran → turnOpen stuck true, tickProcessed false).
+ * Does **not** match a normal "new full turn opened via /tick" state (tickProcessed true, last log still end_turn).
  *
  * Usage (DATABASE_URL required, e.g. from .env):
  *   npx tsx scripts/repair-door-game-session.ts --galaxy "Banedonia 2" --dry-run
@@ -43,7 +44,7 @@ async function findOrphans(sessionId: string): Promise<{ playerId: string; name:
       orderBy: { createdAt: "desc" },
       select: { action: true },
     });
-    if (isStuckDoorTurnAfterSkipEndLog(true, last?.action)) {
+    if (isStuckDoorTurnAfterSkipEndLog(true, last?.action, e.tickProcessed ?? undefined)) {
       orphans.push({ playerId: p.id, name: p.name });
     }
   }
@@ -120,6 +121,12 @@ async function main() {
       );
       process.exit(1);
     }
+    if (!force && !isStuckDoorTurnAfterSkipEndLog(true, last?.action, p.empire.tickProcessed ?? undefined)) {
+      console.log(
+        `${p.name}: not the stuck skip pattern (e.g. new full turn open after /tick with tickProcessed true) — nothing to repair. Use --force to close anyway.`,
+      );
+      process.exit(0);
+    }
     if (dryRun) {
       console.log(`[dry-run] Would closeFullTurn for ${p.name} (${p.id})`);
       process.exit(0);
@@ -131,12 +138,12 @@ async function main() {
 
   const orphans = await findOrphans(sessionId);
   if (orphans.length === 0) {
-    console.log("No orphan door states found (turnOpen + last log end_turn).");
+    console.log("No orphan door states found (turnOpen + last log end_turn + tickProcessed false).");
     process.exit(0);
   }
 
   for (const o of orphans) {
-    console.log(`Orphan: ${o.name} (${o.playerId}) — last log end_turn but turnOpen still true`);
+    console.log(`Orphan: ${o.name} (${o.playerId}) — last log end_turn, turnOpen true, tickProcessed false (closeFullTurn missing)`);
   }
 
   if (dryRun) {

@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   getAIMove,
@@ -14,6 +15,10 @@ import { getCurrentTurn, advanceTurn } from "@/lib/turn-order";
 const PLAYER_WITH_EMPIRE = {
   empire: { include: { planets: true, army: true, supplyRates: true, research: true } },
 } as const;
+
+type PlayerWithEmpireForAI = Prisma.PlayerGetPayload<{
+  include: typeof PLAYER_WITH_EMPIRE;
+}>;
 
 function paramsFromAIMove(move: Awaited<ReturnType<typeof getAIMove>>): Record<string, unknown> {
   const params: Record<string, unknown> = {};
@@ -33,13 +38,11 @@ function paramsFromAIMove(move: Awaited<ReturnType<typeof getAIMove>>): Record<s
 }
 
 /** Build the empire state snapshot and context needed by getAIMove. */
-async function buildAIMoveContext(player: {
-  name: string;
-  gameSessionId: string | null;
-  empire: NonNullable<Awaited<ReturnType<typeof prisma.player.findUnique<{ include: typeof PLAYER_WITH_EMPIRE }>>>>;
-  id: string;
-}) {
+async function buildAIMoveContext(player: PlayerWithEmpireForAI) {
   const empire = player.empire;
+  if (!empire) {
+    throw new Error("buildAIMoveContext: empire is required");
+  }
   const gameSessionId = player.gameSessionId;
 
   const rivals = gameSessionId
@@ -125,8 +128,7 @@ export async function getAIMoveDecision(playerId: string): Promise<{
   });
   if (!player?.empire || player.empire.turnsLeft < 1) return null;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { ctx, eventStrings, empireState } = await buildAIMoveContext(player as any);
+  const { ctx, eventStrings, empireState } = await buildAIMoveContext(player as PlayerWithEmpireForAI);
 
   const move = await getAIMove(
     player.aiPersona ?? AI_PERSONAS.economist,
@@ -165,8 +167,7 @@ async function runOneAI(playerId: string, playerName: string, persona: string | 
 
   try {
     const tTurn0 = performance.now();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { ctx, eventStrings, empireState } = await buildAIMoveContext(player as any);
+    const { ctx, eventStrings, empireState } = await buildAIMoveContext(player as PlayerWithEmpireForAI);
     const contextMs = performance.now() - tTurn0;
 
     const tMove0 = performance.now();

@@ -1,8 +1,11 @@
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { CIVIL_STATUS_NAMES, PLANET_CONFIG } from "@/lib/game-constants";
 import { getCurrentTurn } from "@/lib/turn-order";
-import { tryRollRound, runDoorGameAITurns } from "@/lib/door-game-turns";
+import { tryRollRound } from "@/lib/door-game-turns";
+import { runDoorGameAITurns } from "@/lib/door-game-turns";
+import { logSrxTiming, msElapsed } from "@/lib/srx-timing";
 import bcrypt from "bcryptjs";
 
 const playerInclude = {
@@ -34,6 +37,10 @@ function findPlayerById(id: string) {
 }
 
 async function buildResponse(player: FullPlayer) {
+  const tBuild = performance.now();
+  let sessionLoadMs: number | undefined;
+  let rosterOrTurnMs: number | undefined;
+
   const e = player.empire!;
   const planetSummary: Record<string, number> = {};
   for (const p of e.planets) {
@@ -56,6 +63,7 @@ async function buildResponse(player: FullPlayer) {
   let roundEndsAt: string | null = null;
 
   if (player.gameSessionId) {
+    const tSess0 = performance.now();
     const sess = await prisma.gameSession.findUnique({
       where: { id: player.gameSessionId },
       select: {
@@ -68,70 +76,24 @@ async function buildResponse(player: FullPlayer) {
         turnStartedAt: true,
       },
     });
-    if (sess) {
+    sessionLoadMs = msElapsed(tSess0);
+    if (!sess) {
+      /* session deleted */
+    } else {
       turnTimeoutSecs = sess.turnTimeoutSecs;
       waitingForGameStart = sess.waitingForHuman === true;
       turnMode = sess.turnMode === "simultaneous" ? "simultaneous" : "sequential";
       dayNumber = sess.dayNumber;
       actionsPerDay = sess.actionsPerDay;
-
-      if (sess.turnMode === "simultaneous" && !sess.waitingForHuman) {
-        const sid = player.gameSessionId!;
-        try {
-          await tryRollRound(sid);
-        } catch (err) {
-          console.error("[status] tryRollRound:", err);
-        }
-
-        // tryRollRound may reset fullTurnsUsed / turnOpen — reload so response and AI kick logic match DB.
-        const freshEmpire = await prisma.empire.findUnique({
-          where: { playerId: player.id },
-        });
-        if (freshEmpire) {
-          Object.assign(e, freshEmpire);
-        }
-
-        const pendingAi = await prisma.player.count({
-          where: {
-            gameSessionId: sid,
-            isAI: true,
-            empire: {
-              turnsLeft: { gt: 0 },
-              fullTurnsUsedThisRound: { lt: sess.actionsPerDay },
-            },
-          },
-        });
-
-        if (pendingAi > 0) {
-          after(() => {
-            void runDoorGameAITurns(sid).catch((err) => {
-              console.error("[door-game] runDoorGameAITurns from status kick", sid, err);
-            });
-          });
-        }
-      }
     }
 
-    const sess2 = await prisma.gameSession.findUnique({
-      where: { id: player.gameSessionId },
-      select: {
-        turnMode: true,
-        dayNumber: true,
-        actionsPerDay: true,
-        roundStartedAt: true,
-        turnStartedAt: true,
-      },
-    });
-
-    if (sess2?.turnMode === "simultaneous") {
-      dayNumber = sess2.dayNumber;
-      actionsPerDay = sess2.actionsPerDay;
+    if (sess?.turnMode === "simultaneous") {
       const used = e.fullTurnsUsedThisRound ?? 0;
       fullTurnsLeftToday = Math.max(0, actionsPerDay - used);
       turnOpen = e.turnOpen ?? false;
       canAct = fullTurnsLeftToday > 0 && e.turnsLeft > 0;
-      if (sess2.roundStartedAt) {
-        roundEndsAt = new Date(sess2.roundStartedAt.getTime() + turnTimeoutSecs * 1000).toISOString();
+      if (sess.roundStartedAt) {
+        roundEndsAt = new Date(sess.roundStartedAt.getTime() + turnTimeoutSecs * 1000).toISOString();
         turnDeadline = roundEndsAt;
       } else {
         roundEndsAt = null;
@@ -140,29 +102,44 @@ async function buildResponse(player: FullPlayer) {
       isYourTurn = canAct;
       currentTurnPlayer = null;
 
+      const roster0 = performance.now();
       const roster = await prisma.player.findMany({
         where: { gameSessionId: player.gameSessionId, empire: { turnsLeft: { gt: 0 } } },
         orderBy: { turnOrder: "asc" },
         select: { name: true, isAI: true },
       });
+      rosterOrTurnMs = msElapsed(roster0);
       turnOrder = roster.map((p) => ({ name: p.name, isAI: p.isAI }));
-    } else {
+    } else if (sess) {
+      const turn0 = performance.now();
       const turn = await getCurrentTurn(player.gameSessionId);
+      rosterOrTurnMs = msElapsed(turn0);
       if (turn) {
         isYourTurn = turn.currentPlayerId === player.id;
         currentTurnPlayer = turn.currentPlayerName;
         turnDeadline = turn.turnDeadline;
         turnOrder = turn.order.map((p) => ({ name: p.name, isAI: p.isAI }));
       } else {
+        const roster0 = performance.now();
         const roster = await prisma.player.findMany({
           where: { gameSessionId: player.gameSessionId, empire: { turnsLeft: { gt: 0 } } },
           orderBy: { turnOrder: "asc" },
           select: { name: true, isAI: true },
         });
+        rosterOrTurnMs = msElapsed(roster0);
         turnOrder = roster.map((p) => ({ name: p.name, isAI: p.isAI }));
       }
     }
   }
+
+  logSrxTiming("status_buildResponse", {
+    playerId: player.id,
+    sessionId: player.gameSessionId,
+    turnMode,
+    totalMs: msElapsed(tBuild),
+    sessionLoadMs,
+    rosterOrTurnMs,
+  });
 
   return {
     player: { id: player.id, name: player.name, isAI: player.isAI },
@@ -245,6 +222,7 @@ async function buildResponse(player: FullPlayer) {
 
 // GET — unauthenticated status refresh (used after initial login, keyed by player ID)
 export async function GET(req: NextRequest) {
+  const tRoute = performance.now();
   const { searchParams } = new URL(req.url);
   const playerName = searchParams.get("player");
   const playerId = searchParams.get("id");
@@ -253,6 +231,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "player or id param required" }, { status: 400 });
   }
 
+  const tFind0 = performance.now();
   const player = playerId
     ? await findPlayerById(playerId)
     : await prisma.player.findFirst({
@@ -260,23 +239,50 @@ export async function GET(req: NextRequest) {
         orderBy: { createdAt: "desc" },
         include: playerInclude,
       });
+  const findPlayerMs = msElapsed(tFind0);
 
   if (!player || !player.empire) {
     return NextResponse.json({ error: "Player not found" }, { status: 404 });
   }
 
-  return NextResponse.json(await buildResponse(player));
+  const tBuild0 = performance.now();
+  const body = await buildResponse(player);
+  const buildResponseMs = msElapsed(tBuild0);
+  logSrxTiming("status_get_route", {
+    playerId: player.id,
+    findPlayerMs,
+    buildResponseMs,
+    routeTotalMs: msElapsed(tRoute),
+  });
+
+  // Non-blocking: after response is sent, check if AIs need to run or round needs to roll.
+  // tryRollRound handles day advancement + round timeout; runDoorGameAITurns deduplicates via doorAiInFlight.
+  if (body.turnMode === "simultaneous" && player.gameSessionId && body.fullTurnsLeftToday === 0) {
+    after(async () => {
+      try {
+        await tryRollRound(player.gameSessionId!);
+        await runDoorGameAITurns(player.gameSessionId!);
+      } catch (e) {
+        console.error("[status] after: tryRollRound/AI drain error", e);
+      }
+    });
+  }
+
+  return NextResponse.json(body);
 }
 
 // POST — authenticated login (resume game with password)
 export async function POST(req: NextRequest) {
+  const tRoute = performance.now();
   const { name, password } = await req.json();
 
   if (!name) {
     return NextResponse.json({ error: "Name is required" }, { status: 400 });
   }
 
+  const tFind0 = performance.now();
   const player = await findActivePlayer(name);
+  const findPlayerMs = msElapsed(tFind0);
 
   if (!player) {
     const finished = await prisma.player.findFirst({
@@ -310,5 +316,15 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  return NextResponse.json(await buildResponse(player));
+  const tBuild0 = performance.now();
+  const body = await buildResponse(player);
+  const buildResponseMs = msElapsed(tBuild0);
+  logSrxTiming("status_post_route", {
+    playerId: player.id,
+    findPlayerMs,
+    buildResponseMs,
+    routeTotalMs: msElapsed(tRoute),
+  });
+
+  return NextResponse.json(body);
 }

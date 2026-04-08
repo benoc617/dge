@@ -14,7 +14,7 @@ out
 .env
 .env.*
 
-# Tests & misc (not needed for image build; still available via bind mount at runtime)
+# Tests & misc
 coverage
 *.log
 

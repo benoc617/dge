@@ -56,11 +56,35 @@ describe("E2E: Admin API", () => {
 
     const get = await adminGetSettings(cookie!);
     expect(get.status).toBe(200);
-    const g = get.data as { geminiModel: string };
+    const g = get.data as {
+      geminiModel: string;
+      doorAiDecideBatchSize: number;
+      geminiMaxConcurrent: number;
+      doorAiMaxConcurrentMcts: number;
+      doorAiMoveTimeoutMs: number;
+    };
     expect(typeof g.geminiModel).toBe("string");
+    expect(g.doorAiDecideBatchSize).toBeGreaterThanOrEqual(1);
+    expect(g.geminiMaxConcurrent).toBeGreaterThanOrEqual(1);
+    expect(g.doorAiMaxConcurrentMcts).toBeGreaterThanOrEqual(1);
+    expect(g.doorAiMoveTimeoutMs).toBeGreaterThanOrEqual(1000);
 
-    const patch = await adminPatchSettings(cookie!, { geminiModel: "gemini-2.5-flash" });
+    const patch = await adminPatchSettings(cookie!, {
+      geminiModel: "gemini-2.5-flash",
+      doorAiDecideBatchSize: 6,
+      geminiMaxConcurrent: 3,
+      doorAiMaxConcurrentMcts: 2,
+      doorAiMoveTimeoutMs: 45_000,
+    });
     expect(patch.status).toBe(200);
+
+    const get2 = await adminGetSettings(cookie!);
+    expect(get2.status).toBe(200);
+    const g2 = get2.data as typeof g;
+    expect(g2.doorAiDecideBatchSize).toBe(6);
+    expect(g2.geminiMaxConcurrent).toBe(3);
+    expect(g2.doorAiMaxConcurrentMcts).toBe(2);
+    expect(g2.doorAiMoveTimeoutMs).toBe(45_000);
   });
 
   it("rejects invalid admin login", async () => {

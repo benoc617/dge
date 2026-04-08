@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import { alterNumber } from "./game-constants";
 import * as rng from "./rng";
@@ -37,9 +38,9 @@ const COVERT_OPS: Record<number, { name: string; cost: number }> = {
 // --- Individual covert operation handlers ---
 // Each returns { messages, effects } for the successful case.
 
-type DefenderEmpire = NonNullable<Awaited<ReturnType<typeof prisma.empire.findUnique<{
+type DefenderEmpire = Prisma.EmpireGetPayload<{
   include: { army: true; planets: true };
-}>>>>;
+}>;
 
 type OpResult = { messages: string[]; effects: Record<string, unknown> };
 

@@ -892,7 +892,7 @@ export async function processAction(
   if (!player.empire.army) return { success: false, message: "Army not found." };
 
   const sessionFilter = player.gameSessionId ? { gameSessionId: player.gameSessionId } : {};
-  let empire = player.empire;
+  const empire = player.empire;
   const army = player.empire.army;
   const planets = player.empire.planets;
   const supplyRates = player.empire.supplyRates;

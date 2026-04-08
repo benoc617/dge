@@ -6,17 +6,19 @@ A turn-based galactic empire management game — a modern reimagining of the BBS
 
 ### Option A — Docker Compose (recommended)
 
-Runs **PostgreSQL** and the **Next.js dev server** in containers. Source code is bind-mounted so edits hot-reload (with polling enabled for Docker Desktop on macOS/Windows).
+Runs **PostgreSQL** and the **Next.js dev server** in containers. The app **image** includes a copy of the repo at build time — there is **no bind mount**. After you change code, run **`npm run deploy`** (or **`npm run docker:dev:redeploy`**) so Docker rebuilds the image and recreates the app container.
 
 ```bash
 # Optional: API keys and admin overrides (DATABASE_URL is set inside Compose for the app)
 cat > .env <<EOF
 GEMINI_API_KEY="your-key-here"
 GEMINI_MODEL="gemini-2.5-flash"
-# GEMINI_MAX_CONCURRENT="4"           # cap concurrent Gemini API calls (global)
+# GEMINI_MAX_CONCURRENT="4"           # cap concurrent Gemini API calls (global); /admin can persist overrides in SystemSettings
+# DOOR_AI_MAX_CONCURRENT_MCTS="1"      # Optimal/MCTS parallelism cap (same)
+# DOOR_AI_DECIDE_BATCH_SIZE="4"       # door-game parallel decide wave size (same)
+# DOOR_AI_MOVE_TIMEOUT_MS="60000"    # per-AI decide wall-clock cap in ms (same)
 # DOOR_AI_MAX_CONCURRENT_MCTS="1"     # cap concurrent Optimal/MCTS in getAIMove
-# DOOR_AI_PARALLEL_DECIDE="0"         # 1 = overlap door-game AI decisions in batches (apply stays serial)
-# DOOR_AI_DECIDE_BATCH_MAX="4"        # max AIs per wave when parallel decide is on
+# SRX_LOG_AI_TIMING="1"               # JSON [srx-ai] lines: Gemini/MCTS latency (see CLAUDE.md); [srx-timing] is always on
 # NEXT_DISABLE_DEV_INDICATOR="true"   # hide Next.js bottom-left dev indicator (restart required)
 # ADMIN_USERNAME="admin"
 # INITIAL_ADMIN_PASSWORD="srxpass"
@@ -30,13 +32,16 @@ docker compose up --build
 - **App:** [http://localhost:3000](http://localhost:3000) — Operators: [http://localhost:3000/admin](http://localhost:3000/admin) · [http://localhost:3000/admin/users](http://localhost:3000/admin/users) (accounts)
 - **Postgres on the host:** `localhost:5433` (user `postgres`, password `postgres`, database `srx`) — use this in `DATABASE_URL` if you run **Prisma CLI on the host** (`db push`, `studio`) against the same database.
 - On startup the **app** container runs `prisma db push` (sync schema to DB). No migration files — schema changes go directly to `schema.prisma` and are pushed.
+- **First page load in dev** can take **10–30s** while Turbopack compiles the large client bundle; the tab may spin until that finishes. The entrypoint triggers a background `GET /` so the route is often warm before you open the browser — if it still spins, wait or reload once after the container logs show `GET / warm`.
 - To seed **SystemSettings** from your `.env` into the DB (for `/admin` overrides): **`docker compose exec app npm run seed:system-settings`** (recommended; matches the app container). Alternative on the host: `DATABASE_URL="postgresql://postgres:postgres@localhost:5433/srx" npm run seed:system-settings`
 
 Stop: `docker compose down` · Logs: `npm run docker:logs`
 
-**Rebuild, deploy, and restart dev** (e.g. after schema/git changes — runs `docker compose up --build -d`, `prisma generate` in the app container, then `docker compose restart app`): `npm run docker:dev:redeploy`
+**Rebuild dev from current tree** (after pulls or local edits — rebuilds the app image and starts the stack): **`npm run docker:dev:redeploy`**
 
-If the app returns **500** (including on login) and logs mention **`lightningcss.*.node`** or **`globals.css`**, stale **`node_modules`** and/or **`.next`** (Turbopack) volumes are often the cause. Reset both and rebuild: **`npm run docker:reset-node-modules`**.
+If the app returns **500** (including on login) and logs mention **`lightningcss.*.node`** or **`globals.css`**, run a clean rebuild: **`npm run docker:reset-node-modules`** (removes legacy volumes from older setups, **`docker compose build --no-cache app`**, then **`up -d`**).
+
+Compose sets **`SRX_DOCKER=1`** so Turbopack’s dev filesystem cache is **off** in the container. If Turbopack still crashes, add **`SRX_FORCE_WEBPACK=1`** to the `app` service environment to use **`next dev --webpack`**.
 
 ### Option B — Node on the host
 
@@ -50,7 +55,8 @@ DATABASE_URL="postgresql://postgres:postgres@localhost:5432/srx"
 GEMINI_API_KEY="your-key-here"
 GEMINI_MODEL="gemini-2.5-flash"
 # GEMINI_MAX_CONCURRENT="4"
-# DOOR_AI_PARALLEL_DECIDE="0"
+# DOOR_AI_DECIDE_BATCH_SIZE="4"
+# DOOR_AI_MOVE_TIMEOUT_MS="60000"
 # NEXT_DISABLE_DEV_INDICATOR="true"
 EOF
 
@@ -173,8 +179,10 @@ src/
     player-init.ts                   # Starter empire/planet creation (shared by register, join, AI setup)
     db-context.ts                    # AsyncLocalStorage DB context + advisory lock for door-game
     door-game-turns.ts               # Simultaneous turn mechanics (open/close/rollRound/AI drain)
+    door-game-ui.ts                  # Client rule for Command Center disabled vs canAct/turnOpen
     delete-game-session.ts           # Session + player cascade cleanup
     system-settings.ts               # SystemSettings (Gemini key masking for admin API)
+    door-ai-runtime-settings.ts      # Door-game AI caps (DB + env), semaphore refresh; short TTL cache
     ui-tooltips.ts                   # Tooltip text for Galactic Powers, Empire Status, Command Center
     critical-events.ts               # Situation-report event tiers (critical / warning / info)
 tests/
@@ -182,15 +190,15 @@ tests/
   e2e/                               # HTTP API: game flow, multiplayer, lobbies, auth accounts, aux routes (log, gameover, ai), admin (+ users), …
   vitest.e2e.config.ts               # E2E config: sequential files, `tests/e2e` only
 scripts/
-  deploy-docker-dev.sh               # docker compose restart app (local bind mount; no remote)
+  deploy-docker-dev.sh               # docker compose build app + up -d (pick up code changes)
   simulate.ts                        # CLI runner for simulations
   fix-tsc-bin.js                     # postinstall: repair broken node_modules/.bin/tsc symlink
   docker-entrypoint-dev.sh           # Compose app entry: prisma generate, db push, next dev
-  docker-reset-node-modules-volume.sh  # Drop node_modules + .next volumes, rebuild app (lightningcss / Turbopack cache)
+  docker-reset-node-modules-volume.sh  # Legacy volume cleanup + no-cache rebuild (lightningcss / stale .next)
 prisma/
   schema.prisma                      # Database schema
-Dockerfile.dev                       # Dev image: Node + deps + prisma generate
-docker-compose.yml                   # Postgres + Next dev (bind mount, named volumes for node_modules/.next)
+Dockerfile.dev                       # Dev image: npm ci, COPY repo, prisma generate; no runtime bind mount
+docker-compose.yml                   # Postgres + Next dev (app source baked into image; Postgres data volume only)
 .dockerignore                        # Build context exclusions
 ```
 
@@ -202,7 +210,7 @@ docker-compose.yml                   # Postgres + Next dev (bind mount, named vo
 npm run docker:up        # Compose: Postgres + dev server in Docker (see Quick Start) — primary workflow
 npm run docker:down      # Stop Compose stack
 npm run docker:logs      # Follow `app` container logs
-npm run deploy           # docker compose restart app (Compose already running; bind-mounted source)
+npm run deploy           # docker compose build app + up -d (apply code changes to the running dev server)
 npm run docker:lint      # ESLint inside `app` (stack must be up)
 npm run docker:typecheck # TypeScript check inside `app`
 npm run docker:build     # Production build inside `app`
@@ -224,8 +232,8 @@ npm run docker:test:all    # Unit then E2E in container
 
 **Host scripts** (`npm test`, `npm run test:e2e` on :3005, etc.) are for **CI** (Linux + clean `npm ci`) or explicit local use — **not** for automation against this repo’s Docker workflow.
 
-**E2E:** Prefer **`npm run docker:test:e2e`**. The host script `test:e2e` uses [start-server-and-test](https://github.com/bahmutov/start-server-and-test) to boot `next dev` on **127.0.0.1:3005** — conflicts with Docker’s `next dev` on :3000. **`docker:test:e2e`** runs `test:e2e:only` inside `app` with `TEST_BASE_URL=http://127.0.0.1:3000`. Run `prisma db push` so the schema matches the Prisma client. To exercise **parallel door-game AI decide** (`DOOR_AI_PARALLEL_DECIDE=1`) in E2E, set that variable in `.env` before `docker compose up` (same semantics as serial; mainly for performance / regression checks).
+**E2E:** Prefer **`npm run docker:test:e2e`**. The host script `test:e2e` uses [start-server-and-test](https://github.com/bahmutov/start-server-and-test) to boot `next dev` on **127.0.0.1:3005** — conflicts with Docker’s `next dev` on :3000. **`docker:test:e2e`** runs `test:e2e:only` inside `app` with `TEST_BASE_URL=http://127.0.0.1:3000`. Run `prisma db push` so the schema matches the Prisma client.
 
-**Door-game repair (stuck “waiting for others” after a bad AI skip):** with `DATABASE_URL` set (e.g. `localhost:5433` to Compose Postgres), run `npm run repair:door-session -- --galaxy "Your Galaxy" --dry-run` to list empires where `turnOpen` is still true but the last `TurnLog` action is `end_turn`; then `--apply` to run `closeFullTurn` for each. Or `--apply --player "Commander Name"` with optional `--force` if you must close an open turn manually.
+**Door-game repair (legacy AI skip bug):** with `DATABASE_URL` set (e.g. `localhost:5433` to Compose Postgres), run `npm run repair:door-session -- --galaxy "Your Galaxy" --dry-run` to list empires where `turnOpen` is true, the last `TurnLog` is `end_turn`, and `tickProcessed` is false (meaning `closeFullTurn` never ran). It ignores the normal case where `/tick` opened a new full turn but the newest log is still the previous `end_turn`. Then `--apply` to run `closeFullTurn` for each. Or `--apply --player "Commander Name"` with optional `--force` to close an open turn manually.
 
 All game balance values live in `src/lib/game-constants.ts` — the single source of truth referenced by game logic, UI labels, and simulation strategies. Changing a constant there automatically updates everything.

@@ -1,5 +1,5 @@
-# Local development: Next.js dev server + Prisma (source mounted at runtime).
-# Starts as root for volume ownership fixup, then drops to non-root `node` via setpriv.
+# Local development: Next.js production build served via `next start`. Source is copied into the
+# image at build time (no bind mount). Rebuild the image to pick up code changes — `npm run deploy`.
 FROM node:22-bookworm-slim
 
 WORKDIR /app
@@ -10,12 +10,20 @@ RUN apt-get update \
 
 COPY package.json package-lock.json ./
 COPY scripts/fix-tsc-bin.js ./scripts/fix-tsc-bin.js
-# prisma/ + config before npm ci so postinstall (prisma generate) can run
 COPY prisma ./prisma
 COPY prisma.config.ts ./
 
 RUN npm ci \
   && node -e "require('lightningcss')"
+
+COPY . .
+
+RUN npx prisma generate
+
+# Pre-build so the container runs `next start` — no HMR, no Turbopack file watcher, no
+# lazy compilation stalls. Dummy DATABASE_URL satisfies build-time module analysis; the
+# real URL is injected at runtime by Compose.
+RUN DATABASE_URL="postgresql://build:build@localhost:5432/build" npm run build
 
 COPY scripts/docker-entrypoint-dev.sh /usr/local/bin/docker-entrypoint-dev.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-dev.sh

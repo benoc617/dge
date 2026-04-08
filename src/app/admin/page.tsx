@@ -48,6 +48,10 @@ export default function AdminPage() {
   const [intGeminiKey, setIntGeminiKey] = useState("");
   const [intGeminiPreview, setIntGeminiPreview] = useState("");
   const [intGeminiConfigured, setIntGeminiConfigured] = useState(false);
+  const [intDoorAiDecideBatchSize, setIntDoorAiDecideBatchSize] = useState(4);
+  const [intGeminiMaxConcurrent, setIntGeminiMaxConcurrent] = useState(4);
+  const [intDoorAiMaxConcurrentMcts, setIntDoorAiMaxConcurrentMcts] = useState(1);
+  const [intDoorAiMoveTimeoutMs, setIntDoorAiMoveTimeoutMs] = useState(60_000);
   const [intLoading, setIntLoading] = useState(false);
   const [intError, setIntError] = useState("");
   const [intOk, setIntOk] = useState(false);
@@ -97,6 +101,11 @@ export default function AdminPage() {
     setIntGeminiPreview(typeof data.geminiApiKeyPreview === "string" ? data.geminiApiKeyPreview : "");
     setIntGeminiConfigured(!!data.geminiApiKeyConfigured);
     setIntGeminiKey("");
+    const n = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+    setIntDoorAiDecideBatchSize(n(data.doorAiDecideBatchSize, 4));
+    setIntGeminiMaxConcurrent(n(data.geminiMaxConcurrent, 4));
+    setIntDoorAiMaxConcurrentMcts(n(data.doorAiMaxConcurrentMcts, 1));
+    setIntDoorAiMoveTimeoutMs(n(data.doorAiMoveTimeoutMs, 60_000));
   }, []);
 
   useEffect(() => {
@@ -150,7 +159,13 @@ export default function AdminPage() {
     setIntError("");
     setIntOk(false);
     setIntLoading(true);
-    const body: Record<string, string> = { geminiModel: intGeminiModel.trim() || "gemini-2.5-flash" };
+    const body: Record<string, string | number> = {
+      geminiModel: intGeminiModel.trim() || "gemini-2.5-flash",
+      doorAiDecideBatchSize: intDoorAiDecideBatchSize,
+      geminiMaxConcurrent: intGeminiMaxConcurrent,
+      doorAiMaxConcurrentMcts: intDoorAiMaxConcurrentMcts,
+      doorAiMoveTimeoutMs: intDoorAiMoveTimeoutMs,
+    };
     if (intGeminiKey.trim()) body.geminiApiKey = intGeminiKey.trim();
     const res = await fetch(
       "/api/admin/settings",
@@ -465,8 +480,10 @@ export default function AdminPage() {
       <div className="border border-green-900 p-4 mb-8 space-y-3">
         <h2 className="text-yellow-600 text-xs tracking-wider">INTEGRATION (GEMINI)</h2>
         <p className="text-green-700 text-xs max-w-3xl">
-          <span className="text-green-600">DATABASE_URL</span> must stay in the server environment (not stored here). When set, these values override{" "}
-          <span className="text-green-600">GEMINI_API_KEY</span> / <span className="text-green-600">GEMINI_MODEL</span> from the environment.
+          <span className="text-green-600">DATABASE_URL</span> must stay in the server environment (not stored here). When set, Gemini fields override{" "}
+          <span className="text-green-600">GEMINI_API_KEY</span> / <span className="text-green-600">GEMINI_MODEL</span>. Door-game AI limits override{" "}
+          <span className="text-green-600">DOOR_AI_DECIDE_BATCH_SIZE</span>, <span className="text-green-600">GEMINI_MAX_CONCURRENT</span>,{" "}
+          <span className="text-green-600">DOOR_AI_MAX_CONCURRENT_MCTS</span>, <span className="text-green-600">DOOR_AI_MOVE_TIMEOUT_MS</span> when a row exists.
           API keys are only shown masked below.
         </p>
         <form onSubmit={handleSaveIntegration} className="max-w-xl space-y-2 text-xs">
@@ -491,6 +508,44 @@ export default function AdminPage() {
               Current key: <span className="text-yellow-600">{intGeminiPreview || "set"}</span>
             </p>
           )}
+          <p className="text-green-700 pt-2 border-t border-green-900/80">Door-game / AI concurrency</p>
+          <label className="text-green-700 block">Parallel decide batch size (1–128)</label>
+          <input
+            type="number"
+            min={1}
+            max={128}
+            className="w-full bg-black border border-green-800 text-green-300 px-2 py-1 text-sm"
+            value={intDoorAiDecideBatchSize}
+            onChange={(e) => setIntDoorAiDecideBatchSize(Number(e.target.value))}
+          />
+          <label className="text-green-700 block">Gemini max concurrent (1–64)</label>
+          <input
+            type="number"
+            min={1}
+            max={64}
+            className="w-full bg-black border border-green-800 text-green-300 px-2 py-1 text-sm"
+            value={intGeminiMaxConcurrent}
+            onChange={(e) => setIntGeminiMaxConcurrent(Number(e.target.value))}
+          />
+          <label className="text-green-700 block">Optimal / MCTS max concurrent (1–64)</label>
+          <input
+            type="number"
+            min={1}
+            max={64}
+            className="w-full bg-black border border-green-800 text-green-300 px-2 py-1 text-sm"
+            value={intDoorAiMaxConcurrentMcts}
+            onChange={(e) => setIntDoorAiMaxConcurrentMcts(Number(e.target.value))}
+          />
+          <label className="text-green-700 block">Door AI move timeout (ms, 1000–300000)</label>
+          <input
+            type="number"
+            min={1000}
+            max={300000}
+            step={1000}
+            className="w-full bg-black border border-green-800 text-green-300 px-2 py-1 text-sm"
+            value={intDoorAiMoveTimeoutMs}
+            onChange={(e) => setIntDoorAiMoveTimeoutMs(Number(e.target.value))}
+          />
           <div className="flex flex-wrap gap-2 pt-2">
             <button
               type="submit"

@@ -1,6 +1,4 @@
-import { prisma } from "./prisma";
-import type { Army, Empire, Planet } from "@prisma/client";
-import { COMBAT, MIL, DEFICIT, alterNumber } from "./game-constants";
+import { COMBAT, alterNumber } from "./game-constants";
 import * as rng from "./rng";
 
 // ---------------------------------------------------------------------------
@@ -182,7 +180,7 @@ export function runConventionalInvasion(
 
     for (let round = 0; round < COMBAT.INVASION_ROUNDS_PER_FRONT; round++) {
       let atkStr = calcFrontStrength(atkArmy, front);
-      let defStr = calcFrontStrength(defArmy, front) * COMBAT.DEFENSE_BONUS;
+      const defStr = calcFrontStrength(defArmy, front) * COMBAT.DEFENSE_BONUS;
 
       // Light cruiser protection in space front
       if (front === "space" && round < COMBAT.LIGHT_CRUISER_PROTECTION_ROUNDS) {

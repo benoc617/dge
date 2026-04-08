@@ -9,6 +9,7 @@ import Leaderboard from "@/components/Leaderboard";
 import { classifyTurnEvents } from "@/lib/critical-events";
 import { AUTH, SESSION } from "@/lib/game-constants";
 import { apiFetch } from "@/lib/client-fetch";
+import { simultaneousDoorCommandCenterDisabled } from "@/lib/door-game-ui";
 
 interface HubGame {
   playerId: string;
@@ -294,10 +295,18 @@ export default function Home() {
 
   const refreshState = useCallback(
     async (name: string, playerId?: string | null): Promise<GameState | null> => {
+      const tR0 = performance.now();
       const qs = playerId
         ? `id=${encodeURIComponent(playerId)}`
         : `player=${encodeURIComponent(name)}`;
-      const res = await fetch(`/api/game/status?${qs}`);
+      let res: Response;
+      try {
+        res = await fetch(`/api/game/status?${qs}`, {
+          signal: AbortSignal.timeout(25_000),
+        });
+      } catch {
+        return null;
+      }
       if (!res.ok) return null;
       const raw = await res.text();
       if (!raw.trim()) return null;
@@ -307,12 +316,13 @@ export default function Home() {
         };
         setGameState(data);
         setRefreshKey((k) => k + 1);
+        console.log(`[srx-ui] refreshState ${(performance.now()-tR0).toFixed(0)}ms`);
         if (data.empire?.turnsLeft !== undefined && data.empire.turnsLeft <= 0 && !gameOver) {
           triggerGameOver(name);
         }
         return data;
       } catch {
-        /* ignore malformed status payload */
+        /* ignore malformed status payload or AbortError from timeout */
         return null;
       }
     },
@@ -616,17 +626,20 @@ export default function Home() {
     setGameSessionId(game.gameSessionId);
     setGameOver(null);
     void (async () => {
-      const sesRes = await fetch(`/api/game/session?id=${game.gameSessionId}`);
-      if (sesRes.ok) {
-        const ses = await sesRes.json();
-        setInviteCode(ses.inviteCode ?? "");
-        setGalaxyName(ses.galaxyName ?? "");
-        setIsPublic(ses.isPublic ?? true);
-        setIsCreator(ses.createdBy === game.playerName);
+      try {
+        const sesRes = await fetch(`/api/game/session?id=${game.gameSessionId}`);
+        if (sesRes.ok) {
+          const ses = await sesRes.json();
+          setInviteCode(ses.inviteCode ?? "");
+          setGalaxyName(ses.galaxyName ?? "");
+          setIsPublic(ses.isPublic ?? true);
+          setIsCreator(ses.createdBy === game.playerName);
+        }
+        await refreshState(game.playerName, game.playerId);
+        addEvent(`Welcome back, Commander ${game.playerName}.`);
+      } finally {
+        setLoading(false);
       }
-      await refreshState(game.playerName, game.playerId);
-      addEvent(`Welcome back, Commander ${game.playerName}.`);
-      setLoading(false);
     })();
   }
 
@@ -638,7 +651,7 @@ export default function Home() {
   }
 
   async function handleSkipTurn() {
-    if (gameState?.turnMode === "simultaneous" && gameState.canAct && !gameState.turnOpen) {
+    if (gameState?.turnMode === "simultaneous" && gameState.canAct !== false && !gameState.turnOpen) {
       try {
         await apiFetch("/api/game/tick", {
           method: "POST",
@@ -657,6 +670,7 @@ export default function Home() {
   }
 
   async function handleAction(action: string, params?: Record<string, unknown>) {
+    const t0 = performance.now();
     setTurnProcessing(true);
     dismissActionError();
     let res: Response;
@@ -674,8 +688,10 @@ export default function Home() {
       setTurnProcessing(false);
       return;
     }
+    const tFetched = performance.now();
 
     const text = await res.text();
+    const tParsed = performance.now();
     let data: {
       success?: boolean;
       message?: string;
@@ -695,6 +711,7 @@ export default function Home() {
     const failMsg = data.message ?? data.error ?? `Request failed (${res.status}).`;
 
     if (!res.ok) {
+      console.log(`[srx-ui] handleAction ${action} FAIL fetch=${(tFetched-t0).toFixed(0)}ms parse=${(tParsed-tFetched).toFixed(0)}ms total=${(performance.now()-t0).toFixed(0)}ms`);
       showActionError(failMsg);
       addEvent(`  ✖ ${failMsg}`);
       setTurnProcessing(false);
@@ -703,6 +720,7 @@ export default function Home() {
 
     // Failed action — show error, stay on your turn
     if (!data.success) {
+      console.log(`[srx-ui] handleAction ${action} !success fetch=${(tFetched-t0).toFixed(0)}ms parse=${(tParsed-tFetched).toFixed(0)}ms total=${(performance.now()-t0).toFixed(0)}ms`);
       showActionError(failMsg);
       addEvent(`  ✖ ${failMsg}`);
       setTurnProcessing(false);
@@ -791,19 +809,41 @@ export default function Home() {
       });
     }
 
-    const st = await refreshState(
-      playerName,
-      createdPlayerIdRef.current ?? sessionPlayerId ?? gameState?.player.id,
-    );
-    const hadFullTurnsLeft = (gameState?.fullTurnsLeftToday ?? 0) > 0;
-    if (simultaneous && st?.fullTurnsLeftToday === 0 && hadFullTurnsLeft) {
-      if (deferSituationReportUntilPopupClosedRef.current) {
-        pendingEndOfDayAfterModalChainRef.current = true;
-      } else {
-        setEndOfDayModal(true);
+    if (simultaneous && action !== "end_turn") {
+      // Optimistic update: the server already closed the full turn (turnOpen→false,
+      // fullTurnsUsedThisRound incremented). Apply locally so the tick useEffect can
+      // fire immediately instead of waiting for a full refreshState round trip.
+      setGameState((prev) => {
+        if (!prev) return prev;
+        const used = (prev.empire.fullTurnsUsedThisRound ?? 0) + 1;
+        const left = Math.max(0, (prev as GameState & { actionsPerDay?: number }).actionsPerDay ?? 5 - used);
+        return {
+          ...prev,
+          empire: { ...prev.empire, turnOpen: false, fullTurnsUsedThisRound: used },
+          turnOpen: false,
+          canAct: left > 0 && prev.empire.turnsLeft > 1,
+          fullTurnsLeftToday: left,
+        };
+      });
+      console.log(`[srx-ui] handleAction ${action} OK(opt) fetch=${(tFetched-t0).toFixed(0)}ms parse=${(tParsed-tFetched).toFixed(0)}ms total=${(performance.now()-t0).toFixed(0)}ms`);
+      setTurnProcessing(false);
+    } else {
+      const tRefresh0 = performance.now();
+      const st = await refreshState(
+        playerName,
+        createdPlayerIdRef.current ?? sessionPlayerId ?? gameState?.player.id,
+      );
+      console.log(`[srx-ui] handleAction ${action} OK fetch=${(tFetched-t0).toFixed(0)}ms parse=${(tParsed-tFetched).toFixed(0)}ms refresh=${(performance.now()-tRefresh0).toFixed(0)}ms total=${(performance.now()-t0).toFixed(0)}ms`);
+      const hadFullTurnsLeft = (gameState?.fullTurnsLeftToday ?? 0) > 0;
+      if (simultaneous && st?.fullTurnsLeftToday === 0 && hadFullTurnsLeft) {
+        if (deferSituationReportUntilPopupClosedRef.current) {
+          pendingEndOfDayAfterModalChainRef.current = true;
+        } else {
+          setEndOfDayModal(true);
+        }
       }
+      setTurnProcessing(false);
     }
-    setTurnProcessing(false);
   }
 
   // Run turn tick when it becomes our turn
@@ -811,22 +851,37 @@ export default function Home() {
     if (!gameState || !playerName || tickFired || turnProcessing) return;
     const simultaneous = gameState.turnMode === "simultaneous";
     const needTick = simultaneous
-      ? gameState.canAct === true && gameState.turnOpen === false
+      ? gameState.canAct !== false && gameState.turnOpen === false
       : gameState.isYourTurn === true;
     if (!needTick) return;
     setTickFired(true);
 
     (async () => {
+      const tTick0 = performance.now();
       try {
         const res = await apiFetch("/api/game/tick", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ playerName }),
         });
-        const data = await res.json();
-        if (data.turnReport) {
-          const r = data.turnReport;
-          // Log to event log
+        const tTickFetched = performance.now();
+        let data: { turnReport?: unknown; turnOpened?: boolean; alreadyProcessed?: boolean };
+        try {
+          const text = await res.text();
+          data = text ? (JSON.parse(text) as typeof data) : {};
+        } catch {
+          console.log(`[srx-ui] tick parse-error fetch=${(tTickFetched-tTick0).toFixed(0)}ms`);
+          setTickFired(false);
+          return;
+        }
+        if (!res.ok) {
+          console.log(`[srx-ui] tick FAIL(${res.status}) fetch=${(tTickFetched-tTick0).toFixed(0)}ms total=${(performance.now()-tTick0).toFixed(0)}ms`);
+          setTickFired(false);
+          return;
+        }
+        const tr = data.turnReport;
+        if (tr && typeof tr === "object" && tr !== null && "income" in tr) {
+          const r = tr as TurnPopupData;
           addEvent(`═══════════════════════════════════`);
           addEvent(`  TURN ${gameState.empire.turnsPlayed} — SITUATION REPORT`);
           addEvent(`═══════════════════════════════════`);
@@ -857,10 +912,16 @@ export default function Home() {
           } else {
             setTurnPopup(turnStartPayload);
           }
-          // Refresh state to show post-tick values
+        }
+        if (simultaneous) {
+          await refreshState(playerName, gameState.player.id);
+        } else if (tr && typeof tr === "object") {
           await refreshState(playerName, gameState.player.id);
         }
-      } catch { /* ignore tick errors */ }
+        console.log(`[srx-ui] tick OK fetch=${(tTickFetched-tTick0).toFixed(0)}ms total=${(performance.now()-tTick0).toFixed(0)}ms hasTR=${!!tr}`);
+      } catch {
+        setTickFired(false);
+      }
     })();
   }, [
     gameState?.isYourTurn,
@@ -910,11 +971,14 @@ export default function Home() {
     prevDayNumberRef.current = d;
   }, [gameState?.dayNumber, gameState?.turnMode]);
 
-  // Poll for turn updates (AI, other humans, or door-game round rollover)
+  // Poll for turn updates (AI, other humans, or door-game round rollover). Paused while tab is hidden
+  // so background tabs do not hammer /api/game/status (heavy: tryRollRound, door-game AI kick).
   useEffect(() => {
     if (!gameState || turnProcessing) return;
     if (gameState.turnMode !== "simultaneous" && gameState.isYourTurn !== false) return;
-    const interval = setInterval(async () => {
+
+    const poll = async () => {
+      if (typeof document !== "undefined" && document.hidden) return;
       try {
         const res = await fetch(`/api/game/status?id=${gameState.player.id}`);
         if (res.ok) {
@@ -922,9 +986,21 @@ export default function Home() {
           setGameState(data);
           setRefreshKey((k) => k + 1);
         }
-      } catch { /* ignore polling errors */ }
-    }, 2000);
-    return () => clearInterval(interval);
+      } catch {
+        /* ignore polling errors */
+      }
+    };
+
+    const interval = setInterval(poll, 2000);
+    const onVisibility = () => {
+      if (!document.hidden) void poll();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [gameState?.isYourTurn, gameState?.turnMode, gameState?.player.id, turnProcessing]);
 
   // ─── LOGIN / REGISTER SCREEN ───
@@ -1508,7 +1584,7 @@ export default function Home() {
               disabled={
                 turnProcessing ||
                 (gameState?.turnMode === "simultaneous"
-                  ? !gameState?.canAct || !gameState?.turnOpen
+                  ? simultaneousDoorCommandCenterDisabled(gameState?.canAct, gameState?.turnOpen)
                   : gameState?.isYourTurn === false)
               }
               skipDisabled={
@@ -1518,7 +1594,13 @@ export default function Home() {
                   : gameState?.isYourTurn === false)
               }
             turnProcessing={turnProcessing}
-              currentTurnPlayer={gameState?.turnMode === "simultaneous" ? null : (gameState?.currentTurnPlayer ?? null)}
+              currentTurnPlayer={
+                gameState?.turnMode === "simultaneous"
+                  ? gameState?.canAct === false
+                    ? "others"
+                    : null
+                  : (gameState?.currentTurnPlayer ?? null)
+              }
               turnOrder={gameState?.turnOrder}
               sessionInfo={gameSessionId ? {
                 gameSessionId,

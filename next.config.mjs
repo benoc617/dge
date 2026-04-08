@@ -11,9 +11,17 @@ const disableDevIndicator = (() => {
   return v === "1" || lower === "true" || lower === "yes";
 })();
 
+/** Set in docker-compose for stable Turbopack dev in the Linux container. */
+const isDockerCompose = process.env.SRX_DOCKER === "1";
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Docker bind-mount + Turbopack can infer src/app as root; breaks postcss/lightningcss resolution.
+  experimental: {
+    // Next 16.1+ enables Turbopack dev FS cache by default. In Docker dev, stale/corrupt cache under
+    // `.next` has been observed to crash or panic Turbopack. Disable in Compose; host `next dev` keeps the cache.
+    ...(isDockerCompose ? { turbopackFileSystemCacheForDev: false } : {}),
+  },
+  // Pin root so Turbopack does not infer `src/app` as the project root (breaks postcss/lightningcss).
   turbopack: {
     root: __dirname,
   },

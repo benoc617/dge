@@ -30,7 +30,6 @@ import {
   cloneEmpire,
   pickRolloutMove,
 } from "./sim-state";
-import type { ActionType } from "./game-engine";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -110,7 +109,7 @@ function rollout(
   depth: number,
   rng: () => number,
 ): number[] {
-  let curStates = states.map(cloneEmpire);
+  const curStates = states.map(cloneEmpire);
   let curIdx = currentPlayerIdx;
   const n = curStates.length;
 
@@ -269,6 +268,152 @@ export function mctsSearch(
   if (root.children.length === 0) return rootCandidates[0];
   const best = root.children.reduce((a, b) => (a.visits > b.visits ? a : b));
   return best.move ?? rootCandidates[0];
+}
+
+const YIELD_INTERVAL_MS = 5;
+const yieldEventLoop = () => new Promise<void>((r) => setImmediate(r));
+
+/**
+ * Async variant of mctsSearch that yields the event loop every ~50ms so
+ * HTTP requests are not starved during long (e.g. 45s) MCTS budgets.
+ * Identical algorithm — only the outer iteration loop adds periodic yields.
+ */
+export async function mctsSearchAsync(
+  states: PureEmpireState[],
+  playerIdx: number,
+  config: Partial<MCTSConfig> = {},
+): Promise<CandidateMove> {
+  const cfg: MCTSConfig = { ...DEFAULT_MCTS_CONFIG, ...config };
+  const rng = cfg.seed !== null ? makeRng(cfg.seed) : Math.random;
+  const n = states.length;
+
+  const rivals: RivalView[] = states
+    .filter((_, i) => i !== playerIdx)
+    .map((s) => ({
+      id: s.id, name: s.name, netWorth: s.netWorth,
+      isProtected: s.isProtected, credits: s.credits,
+      population: s.population, planets: s.planets, army: s.army,
+    }));
+
+  const rootCandidates = generateCandidateMoves(states[playerIdx], rivals, cfg.branchFactor);
+  if (rootCandidates.length === 1) return rootCandidates[0];
+
+  const root: MCTSNode = {
+    move: null,
+    parent: null,
+    children: [],
+    visits: 0,
+    scores: Array<number>(n).fill(0),
+    untriedMoves: [...rootCandidates],
+    states: states.map(cloneEmpire),
+    currentPlayerIdx: playerIdx,
+  };
+
+  const deadline = cfg.timeLimitMs != null ? Date.now() + cfg.timeLimitMs : null;
+  let lastYield = Date.now();
+
+  for (let iter = 0; deadline !== null ? Date.now() < deadline : iter < cfg.iterations; iter++) {
+    // Yield to the event loop periodically so HTTP requests are not starved
+    const now = Date.now();
+    if (now - lastYield >= YIELD_INTERVAL_MS) {
+      await yieldEventLoop();
+      lastYield = Date.now();
+    }
+
+    // 1. Selection
+    let node = root;
+    while (node.untriedMoves.length === 0 && node.children.length > 0) {
+      node = node.children.reduce((best, child) =>
+        ucb1(child, node.visits, cfg.explorationC, node.currentPlayerIdx) >
+        ucb1(best, node.visits, cfg.explorationC, node.currentPlayerIdx)
+          ? child
+          : best,
+      );
+    }
+
+    // 2. Expansion
+    if (node.untriedMoves.length > 0) {
+      const moveIdx = Math.floor(rng() * node.untriedMoves.length);
+      const move = node.untriedMoves.splice(moveIdx, 1)[0];
+      const nextPlayerIdx = (node.currentPlayerIdx + 1) % n;
+
+      const newStates = node.states.map(cloneEmpire);
+      newStates[node.currentPlayerIdx] = applyTick(newStates[node.currentPlayerIdx], rng, n, true);
+
+      const rivalViews: RivalView[] = newStates
+        .filter((_, i) => i !== node.currentPlayerIdx)
+        .map((s) => ({
+          id: s.id, name: s.name, netWorth: s.netWorth,
+          isProtected: s.isProtected, credits: s.credits,
+          population: s.population, planets: s.planets, army: s.army,
+        }));
+
+      const result = applyAction(newStates[node.currentPlayerIdx], move.action, move.params, rivalViews, rng);
+      newStates[node.currentPlayerIdx] = result.state;
+      for (const rv of result.rivals) {
+        const idx = newStates.findIndex((x) => x.id === rv.id);
+        if (idx >= 0 && idx !== node.currentPlayerIdx) {
+          newStates[idx].credits = rv.credits;
+          newStates[idx].population = rv.population;
+          newStates[idx].army = { ...rv.army };
+        }
+      }
+
+      const childRivals: RivalView[] = newStates
+        .filter((_, i) => i !== nextPlayerIdx)
+        .map((s) => ({
+          id: s.id, name: s.name, netWorth: s.netWorth,
+          isProtected: s.isProtected, credits: s.credits,
+          population: s.population, planets: s.planets, army: s.army,
+        }));
+
+      const child: MCTSNode = {
+        move,
+        parent: node,
+        children: [],
+        visits: 0,
+        scores: Array<number>(n).fill(0),
+        untriedMoves: generateCandidateMoves(newStates[nextPlayerIdx], childRivals, cfg.branchFactor),
+        states: newStates,
+        currentPlayerIdx: nextPlayerIdx,
+      };
+      node.children.push(child);
+      node = child;
+    }
+
+    // 3. Simulation
+    const leafScores = rollout(node.states, node.currentPlayerIdx, cfg.rolloutDepth, rng);
+
+    // 4. Backpropagation
+    let cur: MCTSNode | null = node;
+    while (cur !== null) {
+      cur.visits++;
+      for (let i = 0; i < n; i++) {
+        cur.scores[i] += leafScores[i];
+      }
+      cur = cur.parent;
+    }
+  }
+
+  if (root.children.length === 0) return rootCandidates[0];
+  const best = root.children.reduce((a, b) => (a.visits > b.visits ? a : b));
+  return best.move ?? rootCandidates[0];
+}
+
+/**
+ * Async variant of searchOpponentMove — uses mctsSearchAsync so the event loop
+ * is not starved during long MCTS budgets. Use this from live server paths;
+ * the sync searchOpponentMove is fine for simulation (short budgets).
+ */
+export async function searchOpponentMoveAsync(
+  states: PureEmpireState[],
+  playerIdx: number,
+  cfg: SearchOpponentConfig = { strategy: "mcts" },
+): Promise<CandidateMove> {
+  if (cfg.strategy === "maxn") {
+    return maxNMove(states, playerIdx, cfg.maxn);
+  }
+  return mctsSearchAsync(states, playerIdx, cfg.mcts);
 }
 
 // ---------------------------------------------------------------------------

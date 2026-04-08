@@ -3,9 +3,10 @@ import { PLANET_CONFIG, UNIT_COST } from "@/lib/game-constants";
 import { targetHasNewEmpireProtection } from "@/lib/empire-protection";
 import * as rng from "@/lib/rng";
 import { empireFromPrisma, makeRng, type PrismaEmpireShape } from "@/lib/sim-state";
-import { searchOpponentMove, buildSearchStates } from "@/lib/search-opponent";
+import { searchOpponentMoveAsync, buildSearchStates } from "@/lib/search-opponent";
 import { getAvailableTech } from "@/lib/research";
 import { withGeminiGeneration, withMctsDecide } from "@/lib/ai-concurrency";
+import { resolveDoorAiRuntimeSettings } from "@/lib/door-ai-runtime-settings";
 
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
@@ -324,6 +325,7 @@ export async function getAIMove(
   gameEvents: string[],
   ctx: AIMoveContext,
 ): Promise<AIMoveResult> {
+  await resolveDoorAiRuntimeSettings();
   const tStart = performance.now();
   const state = empireState as EmpireState;
 
@@ -402,8 +404,8 @@ CRITICAL RULES:
 Respond ONLY with valid JSON:
 {"action": "action_name", "type": "value_if_buy_planet", "target": "name_if_attack", "amount": number_if_applicable, "opType": number_if_covert, "rate": number_if_set_tax, "techId": "id_if_discover", "reasoning": "brief tactical reasoning"}`;
 
-  const runFallback = (): AIMoveResult => {
-    const raw = localFallback(state, persona, ctx);
+  const runFallback = async (): Promise<AIMoveResult> => {
+    const raw = await localFallback(state, persona, ctx);
     return sanitizeAIMove(raw as Record<string, unknown>, ctx, "fallback");
   };
 
@@ -425,7 +427,7 @@ Respond ONLY with valid JSON:
   const configMs = performance.now() - tConfig0;
 
   if (!geminiCfg.apiKey || geminiCfg.apiKey.startsWith("your-")) {
-    const out = runFallback();
+    const out = await runFallback();
     logGetAIMoveTiming({
       totalMs: performance.now() - tStart,
       configMs,
@@ -449,7 +451,7 @@ Respond ONLY with valid JSON:
     const json = text.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
     const parsed = JSON.parse(json) as Record<string, unknown>;
     if (typeof parsed.action !== "string" || !VALID_ACTIONS.has(parsed.action)) {
-      const out = runFallback();
+      const out = await runFallback();
       logGetAIMoveTiming({
         totalMs: performance.now() - tStart,
         configMs,
@@ -468,7 +470,7 @@ Respond ONLY with valid JSON:
     });
     return attachAiTiming(out, tStart, configMs, generateMs);
   } catch {
-    const out = runFallback();
+    const out = await runFallback();
     logGetAIMoveTiming({
       totalMs: performance.now() - tStart,
       configMs,
@@ -482,13 +484,14 @@ Respond ONLY with valid JSON:
 
 /**
  * Time-budgeted MCTS fallback for the "optimal" persona.
- * Runs until `budgetMs` wall-clock ms elapsed; returns null on any error so
- * `localFallback` can drop through to the heuristic policy.
+ * Uses the async MCTS variant that yields the event loop every ~50ms so
+ * long budgets (e.g. 45s) don't starve HTTP requests.
+ * Returns null on any error so `localFallback` can drop through to heuristics.
  */
-function mctsLocalFallback(
+async function mctsLocalFallback(
   state: EmpireState,
   budgetMs: number,
-): { action: string; reasoning: string; [key: string]: unknown } | null {
+): Promise<{ action: string; reasoning: string; [key: string]: unknown } | null> {
   try {
     const seedVal = rng.getSeed();
     const localRng = seedVal !== null ? makeRng(seedVal) : undefined;
@@ -527,10 +530,10 @@ function mctsLocalFallback(
     };
     const selfState = empireFromPrisma(shape, "optimal-ai");
     const { states, playerIdx } = buildSearchStates(selfState, []);
-    const move = searchOpponentMove(states, playerIdx, {
+    const move = await searchOpponentMoveAsync(states, playerIdx, {
       strategy: "mcts",
       mcts: {
-        iterations: 999_999, // ignored when timeLimitMs is set
+        iterations: 999_999,
         timeLimitMs: budgetMs,
         rolloutDepth: 25,
         seed: localRng ? Math.floor(localRng() * 0xffffffff) : undefined,
@@ -546,16 +549,17 @@ function mctsLocalFallback(
   }
 }
 
-function localFallback(
+async function localFallback(
   state: EmpireState,
   persona: string,
   ctx: AIMoveContext,
-): { action: string; target?: string; amount?: number; reasoning: string; opType?: number; [key: string]: unknown } {
+): Promise<{ action: string; target?: string; amount?: number; reasoning: string; opType?: number; [key: string]: unknown }> {
   // Optimal persona: MCTS only — no Gemini, no heuristic fallback.
   // getAIMove() already bypasses Gemini before reaching here; this 45s budget
   // lets the search run properly as a live AI opponent.
+  // Uses async MCTS that yields the event loop every ~50ms.
   if (persona.includes("Optimal") || persona.includes("optimal")) {
-    const mctsResult = mctsLocalFallback(state, 45_000);
+    const mctsResult = await mctsLocalFallback(state, 45_000);
     if (mctsResult) return mctsResult as { action: string; reasoning: string; [key: string]: unknown };
   }
 
@@ -567,7 +571,6 @@ function localFallback(
   const population = s?.population ?? 0;
   const turnsPlayed = s?.turnsPlayed ?? 0;
 
-  const rivalNames = ctx.rivalNames.filter((n) => n !== ctx.commanderName);
   const rivalAttackTargets = (ctx.rivalAttackTargets ?? []).filter((n) => n !== ctx.commanderName);
 
   const PC = PLANET_CONFIG;

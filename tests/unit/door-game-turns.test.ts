@@ -4,12 +4,19 @@ import {
   isStuckDoorTurnAfterSkipEndLog,
   isSessionRoundTimedOut,
   DOOR_AI_MOVE_TIMEOUT_MS,
+  DOOR_AI_DECIDE_BATCH_SIZE,
 } from "@/lib/door-game-turns";
 import { hashSessionIdToBigInt } from "@/lib/db-context";
 
 describe("DOOR_AI_MOVE_TIMEOUT_MS", () => {
   it("matches door-game AI decide race cap (60s)", () => {
     expect(DOOR_AI_MOVE_TIMEOUT_MS).toBe(60_000);
+  });
+});
+
+describe("DOOR_AI_DECIDE_BATCH_SIZE", () => {
+  it("is the fixed parallel-decide wave size", () => {
+    expect(DOOR_AI_DECIDE_BATCH_SIZE).toBe(4);
   });
 });
 
@@ -29,14 +36,22 @@ describe("canPlayerAct", () => {
 });
 
 describe("isStuckDoorTurnAfterSkipEndLog", () => {
-  it("is true when turn is open but last log was end_turn (orphan skip)", () => {
-    expect(isStuckDoorTurnAfterSkipEndLog(true, "end_turn")).toBe(true);
+  it("is true when turn open, last log end_turn, and tickProcessed false (closeFullTurn never ran)", () => {
+    expect(isStuckDoorTurnAfterSkipEndLog(true, "end_turn", false)).toBe(true);
+  });
+
+  it("is false when tickProcessed true (normal new full turn after /tick; last log may still be prior end_turn)", () => {
+    expect(isStuckDoorTurnAfterSkipEndLog(true, "end_turn", true)).toBe(false);
+  });
+
+  it("is false when tickProcessed undefined (conservative — do not treat as stuck)", () => {
+    expect(isStuckDoorTurnAfterSkipEndLog(true, "end_turn", undefined)).toBe(false);
   });
 
   it("is false when turn closed or last action was not end_turn", () => {
-    expect(isStuckDoorTurnAfterSkipEndLog(false, "end_turn")).toBe(false);
-    expect(isStuckDoorTurnAfterSkipEndLog(true, "buy_planet")).toBe(false);
-    expect(isStuckDoorTurnAfterSkipEndLog(true, undefined)).toBe(false);
+    expect(isStuckDoorTurnAfterSkipEndLog(false, "end_turn", false)).toBe(false);
+    expect(isStuckDoorTurnAfterSkipEndLog(true, "buy_planet", false)).toBe(false);
+    expect(isStuckDoorTurnAfterSkipEndLog(true, undefined, false)).toBe(false);
   });
 });
 

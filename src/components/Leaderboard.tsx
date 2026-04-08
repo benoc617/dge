@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { LEADERBOARD as TT } from "@/lib/ui-tooltips";
 import Tooltip from "@/components/Tooltip";
 
@@ -20,16 +20,23 @@ export interface RivalEntry {
 
 interface Props {
   currentPlayer: string;
+  /** Bumped after meaningful game state changes. Triggers a leaderboard refresh (debounced). */
   refreshKey: number;
   onSelectTarget: (name: string) => void;
   onRivalsLoaded?: (names: string[]) => void;
 }
 
+const POLL_INTERVAL_MS = 10_000;
+const DEBOUNCE_MS = 2_000;
+
 export default function Leaderboard({ currentPlayer, refreshKey, onSelectTarget, onRivalsLoaded }: Props) {
   const [rivals, setRivals] = useState<RivalEntry[]>([]);
   const [expanded, setExpanded] = useState(true);
+  const lastFetchRef = useRef(0);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fetchLeaderboard = useCallback(async () => {
+    lastFetchRef.current = Date.now();
     try {
       const res = await fetch(`/api/game/leaderboard?player=${encodeURIComponent(currentPlayer)}`);
       if (res.ok) {
@@ -43,9 +50,34 @@ export default function Leaderboard({ currentPlayer, refreshKey, onSelectTarget,
     }
   }, [currentPlayer, onRivalsLoaded]);
 
+  // Fetch on mount
   useEffect(() => {
     fetchLeaderboard();
-  }, [fetchLeaderboard, refreshKey]);
+  }, [fetchLeaderboard]);
+
+  // Poll on a long interval (leaderboard data is not time-critical)
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      fetchLeaderboard();
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [fetchLeaderboard]);
+
+  // Debounced refresh when refreshKey changes (e.g. after a tick completes).
+  // Skips if we fetched recently to avoid piling requests onto the connection pool.
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const sinceLastFetch = Date.now() - lastFetchRef.current;
+    if (sinceLastFetch < DEBOUNCE_MS) return;
+    debounceRef.current = setTimeout(() => {
+      fetchLeaderboard();
+      debounceRef.current = null;
+    }, DEBOUNCE_MS);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [refreshKey, fetchLeaderboard]);
 
   if (rivals.length <= 1) return null;
 

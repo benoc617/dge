@@ -303,11 +303,19 @@ model AdminSettings {
   updatedAt    DateTime @updatedAt
 }
 
-/** Singleton row `id = "default"`. Optional Gemini overrides; `DATABASE_URL` stays in environment only. */
+/** Singleton row `id = "default"`. Optional Gemini + door-game AI concurrency overrides; `DATABASE_URL` stays in environment only. */
 model SystemSettings {
   id           String   @id @default("default")
   geminiApiKey String?
   geminiModel  String?  @default("gemini-2.5-flash")
+  /** Max AIs per parallel `getAIMoveDecision` wave (door-game). */
+  doorAiDecideBatchSize   Int @default(4)
+  /** Global cap on concurrent Gemini `generateContent` calls. */
+  geminiMaxConcurrent     Int @default(4)
+  /** Global cap on concurrent Optimal-persona MCTS runs in `getAIMove`. */
+  doorAiMaxConcurrentMcts Int @default(1)
+  /** Wall-clock ms per `getAIMoveDecision` race (door-game AI). */
+  doorAiMoveTimeoutMs     Int @default(60000)
   updatedAt    DateTime @updatedAt
 }
 

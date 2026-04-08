@@ -1,34 +1,31 @@
 #!/usr/bin/env bash
-# Drop Compose named volumes for app node_modules and .next, remove the app container,
-# rebuild the image, and start the stack. Fixes:
-#   - missing lightningcss-* native binaries (fresh npm ci)
-#   - stale Turbopack/PostCSS cache in .next that still 500s on globals.css even when
-#     node -e "require('lightningcss')" succeeds (clear srx_next volume).
+# Full rebuild of the app image and stack. Use after dependency / native-binding issues or to clear
+# a stale .next inside the container. Legacy named volumes from the old bind-mount setup are removed
+# if they still exist.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-echo "==> stopping and removing app container (releases volumes)"
-docker compose stop app
-docker compose rm -f app
+echo "==> stopping and removing app container"
+docker compose stop app 2>/dev/null || true
+docker compose rm -f app 2>/dev/null || true
 
 for suffix in _srx_node_modules _srx_next; do
   VOL="$(docker volume ls -q | grep "${suffix}\$" | head -n1 || true)"
   label="${suffix#_srx_}"
-  echo "==> removing ${label} volume (if present)"
+  echo "==> removing legacy ${label} volume (if present)"
   if [[ -n "${VOL}" ]]; then
     echo "    ${VOL}"
     docker volume rm "${VOL}"
   else
-    echo "    (none found — compose will create a fresh one on up)"
+    echo "    (none)"
   fi
 done
 
-echo "==> rebuild app image + start stack"
-docker compose build app
+echo "==> rebuild app image (no cache) + start stack"
+docker compose build --no-cache app
 docker compose up -d
 
 echo "==> done — wait for app health, then http://localhost:3000"
-echo "    If npm ci OOMs in the container, raise Docker memory or run:"
-echo "    docker compose run --rm --no-deps --entrypoint \"\" app sh -c \"npm ci\""
+echo "    If npm ci OOMs in the container, raise Docker memory."

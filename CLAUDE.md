@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Container-only npm (mandatory for agents)
 
-**Claude Code, Cursor, and any other automation must not run project Node commands on the host** for verification, fixes, or “does it pass?” checks. The repo is meant to run **inside the Compose `app` container** (Linux image + optional named `node_modules` volume). Host `npm test`, `npm run lint`, `npm run typecheck`, `npm run build`, `npx vitest`, etc. often **fail spuriously** (e.g. missing Rolldown/Vitest native bindings, wrong platform binaries) and **do not** represent the canonical result.
+**Claude Code, Cursor, and any other automation must not run project Node commands on the host** for verification, fixes, or “does it pass?” checks. The repo is meant to run **inside the Compose `app` container** (Linux image with dependencies installed in the image). Host `npm test`, `npm run lint`, `npm run typecheck`, `npm run build`, `npx vitest`, etc. often **fail spuriously** (e.g. missing Rolldown/Vitest native bindings, wrong platform binaries) and **do not** represent the canonical result.
 
 ### Never on the host (for agents)
 
@@ -74,9 +74,9 @@ If a command fails on the host, **do not** treat that as the project failing unt
 - If a new lib file is added under `src/lib/`, it should get a corresponding `tests/unit/<name>.test.ts`.
 - If a new API route is added under `src/app/api/`, it should be exercised by at least one E2E test.
 
-## Next.js dev server (Docker only)
+## Next.js server (Docker only)
 
-**Default workflow:** run the app with **`npm run docker:up`** or **`docker compose up --build`**. Next.js runs **inside the `app` container** (bind-mounted source, `DATABASE_URL` to the Compose Postgres service). **Do not** use `npm run dev` / `npm start` on the host for normal development.
+**Default workflow:** run the app with **`npm run docker:up`** or **`docker compose up --build`**. The **`Dockerfile.dev`** runs **`next build`** at image build time and the entrypoint starts **`next start`** (production server — no HMR, no Turbopack file watcher, no lazy-compilation stalls). Source is **baked into the image** (no bind mount). After code changes, **`npm run deploy`** or **`npm run docker:dev:redeploy`** rebuilds the image and recreates the app. **`DATABASE_URL`** points at the Compose Postgres service. **Do not** use `npm run dev` / `npm start` on the host for normal development.
 
 **Agents (Claude Code, Cursor, etc.):** do **not** launch `next dev`, `npm run dev`, or `npm start` on the host unless the user **explicitly** asks for a host-only run. Starting the dev server outside Docker conflicts with the intended setup and can bind port 3000 while pointing at the wrong `DATABASE_URL`.
 
@@ -85,10 +85,10 @@ If a command fails on the host, **do not** treat that as the project failing unt
 ## Commands
 
 ```bash
-npm run docker:up    # Docker Compose: Postgres + Next dev — primary way to run the app
-npm run docker:dev:redeploy  # Rebuild images, up -d, prisma generate in app, restart app (after schema/pull)
-npm run docker:reset-node-modules  # Remove app + node_modules + .next volumes, rebuild (lightningcss + stale Turbopack postcss cache)
-npm run deploy       # docker compose restart app — local only; use when dev stack is already up
+npm run docker:up    # Docker Compose: Postgres + Next (pre-built) — primary way to run the app
+npm run docker:dev:redeploy  # docker compose up --build -d — rebuild app image from repo, start stack
+npm run docker:reset-node-modules  # Legacy volume cleanup + docker compose build --no-cache app + up -d
+npm run deploy       # docker compose build app && up -d — apply code changes without full stack recreate
 npm run docker:down  # Stop Compose stack
 npm run docker:logs  # Follow app container logs
 npm run docker:test  # Unit tests inside `app` (Compose must be up)
@@ -151,7 +151,7 @@ npm run docker:test:all     # Unit then E2E in container
    ```bash
    docker compose exec app npx prisma db push
    ```
-2. **After `schema.prisma` changes**, regenerate the client **in the container** and restart the app. The named `node_modules` volume can hold a stale `@prisma/client` until you do this; otherwise routes may return **500** until client and DB match.
+2. **After `schema.prisma` changes**, either **rebuild the app image** (`npm run deploy` / `docker:dev:redeploy`) or regenerate in the running container and restart — otherwise routes may return **500** until client and DB match.
    ```bash
    docker compose exec app npx prisma generate
    docker compose restart app
@@ -189,10 +189,10 @@ npm run docker:test:all     # Unit then E2E in container
 | `protection.test.ts` | Attacks vs protected rival blocked |
 | `combat-reporting.test.ts` | `message` + `actionDetails.combatResult` (pirate, guerrilla) |
 | `defender-alerts.test.ts` | Defender alert queue / ALERT lines |
-| `door-game.test.ts` | Door-game register/join, tick+action auto-close, concurrent lock (200+409), round rollover; **human+one AI** and **human+two AIs** (status polls drive AI drain; day rolls); optional `DOOR_AI_PARALLEL_DECIDE` in `.env` for parallel-decide path |
+| `door-game.test.ts` | Door-game register/join, tick+action auto-close, concurrent lock (200+409), round rollover; **human+one AI** and **human+two AIs** (status polls drive AI drain; day rolls) |
 
 The **game-flow** AI test uses **one** AI opponent and a long timeout for Gemini when the key is set; local fallback still exercises the path.
-- **Next.js dev lock:** only one `next dev` per repo directory. **Agents:** use **`npm run docker:test:e2e`** (runs `test:e2e:only` inside `app` against :3000). Do not run host **`npm run test:e2e`** (boots a second dev server on :3005) unless the user explicitly asks.
+- **Agents:** use **`npm run docker:test:e2e`** (runs `test:e2e:only` inside `app` against :3000). Do not run host **`npm run test:e2e`** (boots a second dev server on :3005) unless the user explicitly asks.
 - Framework: Vitest. Unit config: `vitest.config.ts` (include `tests/unit/**` only). E2E config: `vitest.e2e.config.ts`.
 - The simulation harness (`docker compose exec app npm run sim:*`) is still available for balance/regression testing.
 
@@ -200,9 +200,9 @@ The **game-flow** AI test uses **one** AI opponent and a long timeout for Gemini
 
 This is the **canonical** environment for running **Next.js** in this repo (see **Next.js dev server (Docker only)** above).
 
-- **`docker-compose.yml`** + **`Dockerfile.dev`**: PostgreSQL + **`npm run dev:webpack`** (`next dev --webpack`) with the repo bind-mounted, `node_modules` and `.next` in named volumes, polling enabled for file watchers on macOS/Windows. Webpack avoids intermittent **Turbopack** panics in Docker (e.g. “Next.js package not found” / wrong inferred root); host `npm run dev` still defaults to Turbopack. The named `node_modules` volume can hide image-built deps; **`scripts/docker-entrypoint-dev.sh`** runs `npm ci` when the Linux `lightningcss-*` optional package is missing (e.g. after a host-only `npm install` polluted the volume). **`next.config.mjs`** sets **`turbopack.root`** for when Turbopack is used. If dev fails with stale chunks referencing removed files, clear the cache: `docker compose run --rm --no-deps --entrypoint "" app sh -c "find /app/.next -mindepth 1 -delete"`.
+- **`docker-compose.yml`** + **`Dockerfile.dev`**: PostgreSQL + **pre-built Next.js** (`next build` at image build time → `next start` at runtime). The **app image** **`COPY`s the repo** and runs **`next build`** — **no source bind mount**, no HMR/Turbopack file watcher. Rebuild to pick up changes: **`npm run deploy`** or **`docker compose build app && docker compose up -d app`**. **`node_modules`** and **`.next`** live in the container filesystem (not host-mounted). **`scripts/docker-entrypoint-dev.sh`** runs **`npm ci`** if **`lightningcss`** is missing (rare partial install).
 - Postgres is published on **host port 5433** (avoids clashing with a local Postgres on 5432). Inside Compose, the app uses `DATABASE_URL=...@postgres:5432/srx`.
-- **`scripts/docker-entrypoint-dev.sh`**: `prisma generate`, `db push`, then `next dev --webpack --hostname 0.0.0.0`.
+- **`scripts/docker-entrypoint-dev.sh`**: starts as root to **`chown -R node:node /app`** (image layers are root-owned), then **`setpriv`** to **`node`**; sets **`HOME=/home/node`** and **`npm_config_cache`** so **`npm ci`** / **`npx`** do not use **`/root/.npm`**. Then `prisma generate`, `db push`, then `next start --hostname 0.0.0.0`.
 - Optional **`.env`** is merged via `env_file` (`required: false`) for `GEMINI_*`, admin vars, etc.; `DATABASE_URL` in compose overrides for the app container.
 
 ## Environment
@@ -216,11 +216,10 @@ DATABASE_URL="postgresql://postgres:postgres@localhost:5432/srx"
 GEMINI_API_KEY="..."          # or set in shell env; shell takes precedence
 GEMINI_MODEL="gemini-2.5-flash"  # optional, defaults to gemini-2.5-flash
 GEMINI_TIMEOUT_MS="60000"     # optional; max wait per AI Gemini call (ms), default 60000, clamped 1000–300000; then localFallback
-GEMINI_MAX_CONCURRENT="4"     # optional; max concurrent Gemini generateContent calls (global)
-DOOR_AI_MAX_CONCURRENT_MCTS="1"  # optional; max concurrent Optimal-persona MCTS runs in getAIMove
-DOOR_AI_PARALLEL_DECIDE="0"   # optional; set 1 to overlap door-game getAIMoveDecision in batches (serial apply)
-DOOR_AI_DECIDE_BATCH_MAX="4"  # optional; max AIs per wave when parallel decide is on
-DOOR_AI_LOG_WAVE="0"          # optional; 1 logs doorWave JSON lines when parallel decide runs
+GEMINI_MAX_CONCURRENT="4"     # optional; max concurrent Gemini generateContent calls (global); overridden by SystemSettings when set
+DOOR_AI_MAX_CONCURRENT_MCTS="1"  # optional; max concurrent Optimal-persona MCTS runs in getAIMove; overridden by SystemSettings when set
+DOOR_AI_DECIDE_BATCH_SIZE="4"  # optional; max AIs per parallel getAIMoveDecision wave (door-game); overridden by SystemSettings when set
+DOOR_AI_MOVE_TIMEOUT_MS="60000" # optional; wall-clock cap per door-game AI decide; overridden by SystemSettings when set
 # NEXT_DISABLE_DEV_INDICATOR="true"  # optional; hides the Next.js dev route indicator (restart dev server)
 # Admin UI (/admin) — optional overrides (defaults admin / srxpass)
 ADMIN_USERNAME="admin"
@@ -251,6 +250,8 @@ Use this when you need to verify what happened in a live or test DB (e.g. from C
 
 ### What the logs mean
 
+- **`[srx-timing]`** (always on) — JSON lines to stdout for **`POST /api/game/action`**, **`POST /api/game/tick`**, **`GET|POST /api/game/status`** (route + `buildResponse` breakdown), and **`GET /api/game/leaderboard`**. Use **`docker compose logs -f app`** to correlate slow UI with DB/lock phases. **`src/lib/srx-timing.ts`**
+- **`SRX_LOG_AI_TIMING=1`** — **`[srx-ai]`** JSON lines for **`getAIMove`** / **`runOneAI`** latency (Gemini vs fallback).
 - **`TurnLog`** — one row per completed action; `details` JSON includes `params`, `actionMsg`, and either **`report`** (economy snapshot) or **`tickReportDeferred: true`** when the tick already ran earlier in the turn (`POST /api/game/tick` or AI `runAndPersistTick`). Rows with `tickReportDeferred` are **not** missing economy data — the real numbers were applied when the tick ran; omitting the duplicate avoids storing an all-zero stub.
 - **`GameEvent`** — `gameSessionId` is set for new events from in-game actions and AI turns (per-session). `type: ai_turn` rows include `details.llmSource` (`gemini` | `fallback`); the `message` field is prefixed `[gemini]` or `[fallback]` for quick scanning. Legacy rows may have null `gameSessionId`.
 
@@ -312,7 +313,8 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - `src/lib/simulation-harness.ts` — `runSessionSimulation`: full games in **sequential** (`getCurrentTurn` / `advanceTurn`) or **simultaneous** (door-game: `openFullTurn`, `processAction` with `doorActionOpts`, `closeFullTurn`, `tryRollRound` with `scheduleAiDrain: false` to avoid async Gemini AI fighting the sim). Deletes the temp session after summaries. Passes full empire shapes to `pickSimAction` for mcts/maxn strategies.
 - `src/lib/sim-state.ts` — pure in-memory game state for search algorithms. `PureEmpireState`, `applyTick`, `applyAction`, `generateCandidateMoves`, `evalState` (includes research-potential and supply-pipeline deferred-value terms), `makeRng` (local mulberry32 seeded RNG), `cloneEmpire`, `empireFromPrisma`, `inferRolloutStrategy` (detects research/supply/military/etc. from planet composition), `pickRolloutMove` (strategy-aligned move selection for MCTS rollouts). No async, no DB, no global RNG mutation.
 - `src/lib/search-opponent.ts` — N-player MCTS (UCB1 + strategy-aligned rollout via `pickRolloutMove` + backprop) and shallow MaxN search. Configurable via `MCTSConfig` / `MaxNConfig`. Entry points: `mctsSearch`, `maxNMove`, `searchOpponentMove`, `buildSearchStates`.
-- `src/lib/door-game-turns.ts` — door-game mode: `openFullTurn`, `closeFullTurn`, `tryRollRound` (optional `scheduleAiDrain`; kicks `runDoorGameAITurns` after `day_complete` when true), internal `drainDoorGameAiTurns`, `runDoorGameAITurns`; re-exports `withCommitLock` / `GalaxyBusyError` from `db-context`. AI drain picks next AI by **fewest `fullTurnsUsedThisRound`**, then `turnOrder` (fair interleaving for simultaneous play). **`DOOR_AI_PARALLEL_DECIDE=1`** enables batched parallel **`getAIMoveDecision`** + serial **`applyDoorGameAIMove`**; **`DOOR_AI_DECIDE_BATCH_MAX`** (default **4**). **`src/lib/ai-concurrency.ts`** — global semaphores: **`GEMINI_MAX_CONCURRENT`**, **`DOOR_AI_MAX_CONCURRENT_MCTS`** (used by `gemini.ts` `getAIMove`).
+- `src/lib/door-game-ui.ts` — simultaneous mode: `simultaneousDoorCommandCenterDisabled` aligns Command Center `disabled` with the header (`canAct === false` vs undefined — avoids “TURN OPEN” with all actions grayed during a stale/partial status refresh).
+- `src/lib/door-game-turns.ts` — door-game mode: `openFullTurn`, `closeFullTurn`, `tryRollRound` (optional `scheduleAiDrain`; kicks `runDoorGameAITurns` after `day_complete` when true), internal `drainDoorGameAiTurns`, `runDoorGameAITurns`; re-exports `withCommitLock` / `GalaxyBusyError` from `db-context`. AI drain uses batched parallel **`getAIMoveDecision`** + serial **`applyDoorGameAIMove`**; batch size / timeouts from **`resolveDoorAiRuntimeSettings()`** (`SystemSettings` + env). Ordering by **fewest `fullTurnsUsedThisRound`**, then `turnOrder`. **`src/lib/door-ai-runtime-settings.ts`** — effective door/Gemini concurrency caps; **`resolveDoorAiRuntimeSettings()`** uses a **~60s in-process cache** (invalidated on admin **`/api/admin/settings`** PATCH) so AI moves are not one Prisma query each. **`src/lib/ai-concurrency.ts`** — dynamic semaphores for Gemini / MCTS (`setAiConcurrencyCaps` from resolver; used by `gemini.ts` `getAIMove`).
 - `src/lib/db-context.ts` — `getDb()` for Prisma client or interactive transaction; `withCommitLock(sessionId, fn)` uses `pg_try_advisory_xact_lock`.
 - `src/lib/turn-order.ts` — strict sequential turn system. `sessionCannotHaveActiveTurn()` encodes lobby / missing timer; `getCurrentTurn(sessionId)` returns **null** when `waitingForHuman` is true or `turnStartedAt` is null (admin lobby); otherwise resolves the current player (with timeout auto-skip). `advanceTurn(sessionId)` no-ops in lobby.
 - `src/lib/admin-auth.ts` — async `verifyAdminLogin` / `verifyAdminPassword` (DB `AdminSettings` or env password), `requireAdmin` — **valid signed httpOnly cookie** (`srx_admin_session`, see `admin-session.ts`) **or** **`Authorization: Basic`** (E2E, curl). Browser UI: `src/lib/admin-client-storage.ts` stores optional **username pref** only in `sessionStorage` (no password); **Log out** clears cookie + storage.
@@ -336,7 +338,7 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - **Public lobbies**: `GET /api/game/lobbies` returns active public games. `PATCH /api/game/session` toggles `isPublic` (creator-only); **`maxPlayers`** patch allowed **2–128**.
 - **Session info**: `GET /api/game/session?id=` returns session details including invite code.
 - **UI flow**: Login → **Command Center** (active games + Create / Join / Log out) **or** legacy login straight into game; **Create Galaxy** one screen (max players, name, visibility, timer, optional AI toggles; session password from login) → Play; Join → Play.
-- **Admin** (`/admin` + **`/admin/users`**, link on login): `POST /api/admin/login` (sets **signed httpOnly session cookie**; `ADMIN_SESSION_SECRET` min 32 chars in production) | `POST /api/admin/logout` | `GET /api/admin/me` | `POST /api/admin/password` (change password → `AdminSettings` bcrypt + new cookie) | `GET/PATCH /api/admin/settings` (Gemini in `SystemSettings` only; `DATABASE_URL` env-only) | `GET/POST/DELETE /api/admin/galaxies` (DELETE body `{ ids }` removes sessions via `src/lib/delete-game-session.ts`) | **`GET/PATCH/DELETE /api/admin/users`** (list accounts + stats, force user password syncs `UserAccount` + linked `Player` hashes, delete account clears `Player.userId`) — **cookie or Basic** (`admin-auth.ts`). Username only from `ADMIN_USERNAME`; password from DB row or `INITIAL_ADMIN_PASSWORD` env. Pre-staged galaxies use `waitingForHuman` until first human `POST /api/game/join`.
+- **Admin** (`/admin` + **`/admin/users`**, link on login): `POST /api/admin/login` (sets **signed httpOnly session cookie**; `ADMIN_SESSION_SECRET` min 32 chars in production) | `POST /api/admin/logout` | `GET /api/admin/me` | `POST /api/admin/password` (change password → `AdminSettings` bcrypt + new cookie) | `GET/PATCH /api/admin/settings` (Gemini + door-game AI limits in `SystemSettings`; `DATABASE_URL` env-only) | `GET/POST/DELETE /api/admin/galaxies` (DELETE body `{ ids }` removes sessions via `src/lib/delete-game-session.ts`) | **`GET/PATCH/DELETE /api/admin/users`** (list accounts + stats, force user password syncs `UserAccount` + linked `Player` hashes, delete account clears `Player.userId`) — **cookie or Basic** (`admin-auth.ts`). Username only from `ADMIN_USERNAME`; password from DB row or `INITIAL_ADMIN_PASSWORD` env. Pre-staged galaxies use `waitingForHuman` until first human `POST /api/game/join`.
 
 ### Database schema highlights (`prisma/schema.prisma`)
 - `UserAccount` — optional global login (`username`, `fullName`, `email`, `passwordHash`, `lastLoginAt`); `Player.userId` links when the commander is registered
@@ -353,7 +355,7 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - `TurnLog` records every action; `GameEvent` is broadcast log
 - `HighScore` persists final scores across games
 - `AdminSettings` singleton (`id = "admin"`) stores bcrypt admin password when set from `/admin`; if absent, `INITIAL_ADMIN_PASSWORD` env is used
-- `SystemSettings` singleton (`id = "default"`) stores optional `geminiApiKey`, `geminiModel`; `DATABASE_URL` stays in the environment only.
+- `SystemSettings` singleton (`id = "default"`) stores optional `geminiApiKey`, `geminiModel`, and door-game AI fields (`doorAiDecideBatchSize`, `geminiMaxConcurrent`, `doorAiMaxConcurrentMcts`, `doorAiMoveTimeoutMs`); `DATABASE_URL` stays in the environment only.
 - `GameSession` tracks game sessions with `galaxyName` (unique), `createdBy`, `isPublic`, `inviteCode` (unique, auto-generated 8-char hex), `maxPlayers` (default **50**, max **128**), `currentTurnPlayerId` (whose turn it is, by player ID; null in admin lobby until first human), `turnStartedAt` (**nullable** — null in lobby, no timer), **`waitingForHuman`** (pre-staged admin galaxies until first human joins), `turnTimeoutSecs` (default 86400), **`turnMode`**, **`dayNumber`**, **`actionsPerDay`**, **`roundStartedAt`** (door-game round timer anchor), player list, status, and outcome. Players are linked via `Player.gameSessionId` and ordered by `Player.turnOrder`.
 
 ### Action types (all handled in game-engine.ts)

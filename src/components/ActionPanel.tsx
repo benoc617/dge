@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { GameState } from "@/app/page";
 import { getAvailableTech, TECH_TREE } from "@/lib/research";
-import { PLANET_CONFIG, UNIT_COST, ECON, MIL, FINANCE, type PlanetTypeName } from "@/lib/game-constants";
+import { PLANET_CONFIG, UNIT_COST, ECON, MIL, FINANCE, COST_INFLATION, type PlanetTypeName } from "@/lib/game-constants";
 import { COMMAND_CENTER as CC, MILITARY_BUY } from "@/lib/ui-tooltips";
 import Tooltip from "@/components/Tooltip";
 
@@ -40,9 +40,7 @@ function fmt(n: number): string {
   return n.toLocaleString();
 }
 
-const PLANET_TYPE_OPTIONS = (Object.entries(PLANET_CONFIG) as [PlanetTypeName, typeof PLANET_CONFIG[PlanetTypeName]][]).map(
-  ([key, cfg]) => ({ value: key, label: cfg.label, cost: cfg.baseCost, desc: cfg.desc }),
-);
+const PLANET_TYPE_ENTRIES = (Object.entries(PLANET_CONFIG) as [PlanetTypeName, typeof PLANET_CONFIG[PlanetTypeName]][]);
 
 type Tab = "economy" | "military" | "warfare" | "espionage" | "market" | "research" | "settings";
 
@@ -322,17 +320,18 @@ export default function ActionPanel({ onAction, onSkipTurn, state, targetName, o
         <div className="space-y-2">
           <label className="text-green-600 text-xs block">Colonize Planet <Kbd k="C" /></label>
           <div className="space-y-1">
-            {PLANET_TYPE_OPTIONS.map((p) => {
-              const owned = state?.planetSummary?.[p.value] ?? 0;
-              const selected = selectedPlanetType === p.value;
+            {PLANET_TYPE_ENTRIES.map(([key, cfg]) => {
+              const owned = state?.planetSummary?.[key] ?? 0;
+              const selected = selectedPlanetType === key;
+              const cost = Math.round(cfg.baseCost * (1 + (state?.empire.netWorth ?? 0) * COST_INFLATION));
               return (
                 <button
-                  key={p.value}
+                  key={key}
                   type="button"
                   disabled={disabled}
                   onClick={() => {
-                    setSelectedPlanetType(p.value);
-                    doAction("buy_planet", { type: p.value });
+                    setSelectedPlanetType(key);
+                    doAction("buy_planet", { type: key });
                   }}
                   className={`w-full text-left border py-1.5 px-2 text-xs transition-colors ${actBtn} ${
                     selected
@@ -341,10 +340,10 @@ export default function ActionPanel({ onAction, onSkipTurn, state, targetName, o
                   }`}
                 >
                   <div className="flex justify-between items-center">
-                    <span className={selected ? "text-yellow-400" : "text-green-300"}>{p.label}</span>
-                    <span className="text-green-700">{fmt(p.cost)} cr</span>
+                    <span className={selected ? "text-yellow-400" : "text-green-300"}>{cfg.label}</span>
+                    <span className="text-green-700">{fmt(cost)} cr</span>
                   </div>
-                  <div className="text-green-700 text-[10px] mt-0.5">{p.desc}{owned > 0 ? ` · you own ${owned}` : ""}</div>
+                  <div className="text-green-700 text-[10px] mt-0.5">{cfg.desc}{owned > 0 ? ` · you own ${owned}` : ""}</div>
                 </button>
               );
             })}

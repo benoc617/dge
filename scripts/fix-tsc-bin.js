@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable @typescript-eslint/no-require-imports -- Node postinstall script uses CommonJS require */
 /**
  * npm sometimes installs a broken `node_modules/.bin/tsc` that does
  * `require('../lib/tsc.js')` (resolves to `node_modules/lib/`, not TypeScript).

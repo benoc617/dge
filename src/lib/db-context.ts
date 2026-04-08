@@ -10,6 +10,11 @@ export function getDb(): typeof prisma | Prisma.TransactionClient {
   return txStore.getStore() ?? prisma;
 }
 
+/** Run `fn` with `getDb()` guaranteed to return the root `prisma` client (escapes any active transaction context). */
+export function runOutsideTransaction<T>(fn: () => T): T {
+  return txStore.exit(fn);
+}
+
 export class GalaxyBusyError extends Error {
   constructor(message = "Galaxy busy — retry.") {
     super(message);

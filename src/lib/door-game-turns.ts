@@ -1,11 +1,18 @@
-import { getDb } from "@/lib/db-context";
+import { getDb, runOutsideTransaction } from "@/lib/db-context";
 import { runAndPersistTick, processAction, runEndgameSettlementTick, type TurnReport } from "@/lib/game-engine";
 import {
   getAIMoveDecision,
   type DoorGameAIMoveDecision,
 } from "@/lib/ai-runner";
 import { processAiMoveOrSkip } from "@/lib/ai-process-move";
-import { parsePositiveInt } from "@/lib/ai-concurrency";
+import { shouldLogAiTiming } from "@/lib/gemini";
+import { resolveDoorAiRuntimeSettings } from "@/lib/door-ai-runtime-settings";
+
+/** Default door-game AI caps when no DB row (matches prior constants; configurable via admin / env). */
+export {
+  DEFAULT_DOOR_AI_MOVE_TIMEOUT_MS as DOOR_AI_MOVE_TIMEOUT_MS,
+  DEFAULT_DOOR_AI_DECIDE_BATCH_SIZE as DOOR_AI_DECIDE_BATCH_SIZE,
+} from "@/lib/door-ai-runtime-settings";
 
 /** Options for `processAction` during a door-game full turn (after tick is persisted). */
 export const doorActionOpts = {
@@ -38,34 +45,20 @@ export function isSessionRoundTimedOut(
   return nowMs >= roundStartedAt.getTime() + turnTimeoutSecs * 1000;
 }
 
-/** Wall-clock cap per AI door-game move (Gemini can hang; fallback path should stay fast). */
-export const DOOR_AI_MOVE_TIMEOUT_MS = 60_000;
-
-/** When `1`/`true`, door-game AI drain overlaps `getAIMoveDecision` in batches; applies stay serial. */
-export function isDoorAiParallelDecideEnabled(): boolean {
-  const v = process.env.DOOR_AI_PARALLEL_DECIDE;
-  return v === "1" || v === "true" || v === "yes";
-}
-
-/** Max AIs per wave when parallel decide is on (default 4, clamped 1–128). */
-export function getDoorAiDecideBatchMax(): number {
-  return Math.min(128, Math.max(1, parsePositiveInt(process.env.DOOR_AI_DECIDE_BATCH_MAX, 4)));
-}
-
-function shouldLogDoorWave(): boolean {
-  const v = process.env.DOOR_AI_LOG_WAVE;
-  return v === "1" || v === "true" || process.env.SRX_LOG_AI_TIMING === "1" || process.env.SRX_LOG_AI_TIMING === "true";
-}
-
 /**
- * True when the skip-path bug left an empire with turnOpen set but the last logged action was end_turn
- * (closeFullTurn never ran). Used by repair script and tests.
+ * True when the skip-path bug left an empire with turnOpen set, the last logged action was end_turn,
+ * and closeFullTurn never ran (tick still "unprocessed" for the open slot).
+ *
+ * **Not** stuck: after a normal close, `POST /tick` opens the next full turn (`turnOpen` true,
+ * `tickProcessed` true) but the newest TurnLog row may still be the previous full turn's `end_turn`
+ * until the player acts — that is valid; do not repair.
  */
 export function isStuckDoorTurnAfterSkipEndLog(
   turnOpen: boolean,
   lastTurnLogAction: string | null | undefined,
+  tickProcessed: boolean | undefined,
 ): boolean {
-  return turnOpen === true && lastTurnLogAction === "end_turn";
+  return turnOpen === true && lastTurnLogAction === "end_turn" && tickProcessed === false;
 }
 
 /**
@@ -300,11 +293,16 @@ export async function tryRollRound(
 /**
  * Run `getAIMoveDecision` with the same wall-clock cap as the serial path.
  */
-export async function decideDoorGameAIMove(playerId: string): Promise<DoorGameAIMoveDecision> {
+export async function decideDoorGameAIMove(
+  playerId: string,
+  moveTimeoutMs?: number,
+): Promise<DoorGameAIMoveDecision> {
+  const ms =
+    moveTimeoutMs ?? (await resolveDoorAiRuntimeSettings()).doorAiMoveTimeoutMs;
   try {
     return await Promise.race([
       getAIMoveDecision(playerId),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), DOOR_AI_MOVE_TIMEOUT_MS)),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
     ]);
   } catch (err) {
     console.error("[door-game] getAIMoveDecision failed", playerId, err);
@@ -424,74 +422,14 @@ async function drainDoorGameAiTurns(sessionId: string): Promise<void> {
   });
   if (!session || session.turnMode !== "simultaneous" || session.waitingForHuman) return;
 
-  const parallelDecide = isDoorAiParallelDecideEnabled();
-  const batchMax = getDoorAiDecideBatchMax();
-
   let guard = 0;
   while (guard++ < 500) {
     await tryRollRound(sessionId);
 
-    if (parallelDecide) {
-      const batch = await getDb().player.findMany({
-        where: {
-          gameSessionId: sessionId,
-          isAI: true,
-          empire: {
-            turnsLeft: { gt: 0 },
-            fullTurnsUsedThisRound: { lt: session.actionsPerDay },
-          },
-        },
-        orderBy: [
-          { empire: { fullTurnsUsedThisRound: "asc" } },
-          { turnOrder: "asc" },
-        ],
-        take: batchMax,
-        include: { empire: true },
-      });
+    const rt = await resolveDoorAiRuntimeSettings();
+    const { doorAiDecideBatchSize, doorAiMoveTimeoutMs } = rt;
 
-      if (batch.length === 0) break;
-
-      const ready: string[] = [];
-      for (const p of batch) {
-        const ok = await ensureDoorGameFullTurnOpen(p.id);
-        if (ok) ready.push(p.id);
-      }
-
-      if (ready.length === 0) {
-        await runOneDoorGameAI(batch[0].id);
-        continue;
-      }
-
-      const tDecide0 = performance.now();
-      const decisions = await Promise.all(ready.map((id) => decideDoorGameAIMove(id)));
-      const parallelDecideMs = performance.now() - tDecide0;
-
-      const tApply0 = performance.now();
-      for (let i = 0; i < ready.length; i++) {
-        await applyDoorGameAIMove(ready[i], decisions[i], sessionId);
-      }
-      const serialApplyMs = performance.now() - tApply0;
-
-      if (shouldLogDoorWave()) {
-        console.info(
-          "[door-game]",
-          JSON.stringify({
-            event: "doorWave",
-            sessionId,
-            parallelDecide: true,
-            batchSize: ready.length,
-            parallelDecideMs: Math.round(parallelDecideMs),
-            serialApplyMs: Math.round(serialApplyMs),
-          }),
-        );
-      }
-      continue;
-    }
-
-    // Fair scheduling for simultaneous play: prefer empires who have used *fewer* daily slots this
-    // round, then break ties by turnOrder. Strict turnOrder-only ordering starved high turnOrder
-    // AIs (e.g. Rey after a slow Optimal AI ahead in the list).
-    const next = await getDb().player.findFirst({
+    const batch = await getDb().player.findMany({
       where: {
         gameSessionId: sessionId,
         isAI: true,
@@ -504,24 +442,63 @@ async function drainDoorGameAiTurns(sessionId: string): Promise<void> {
         { empire: { fullTurnsUsedThisRound: "asc" } },
         { turnOrder: "asc" },
       ],
+      take: doorAiDecideBatchSize,
       include: { empire: true },
     });
 
-    if (!next?.empire) break;
+    if (batch.length === 0) break;
 
-    await runOneDoorGameAI(next.id);
+    const ready: string[] = [];
+    for (const p of batch) {
+      const ok = await ensureDoorGameFullTurnOpen(p.id);
+      if (ok) ready.push(p.id);
+    }
+
+    if (ready.length === 0) {
+      await runOneDoorGameAI(batch[0].id);
+      continue;
+    }
+
+    const tDecide0 = performance.now();
+    const decisions = await Promise.all(
+      ready.map((id) => decideDoorGameAIMove(id, doorAiMoveTimeoutMs)),
+    );
+    const parallelDecideMs = performance.now() - tDecide0;
+
+    const tApply0 = performance.now();
+    for (let i = 0; i < ready.length; i++) {
+      await applyDoorGameAIMove(ready[i], decisions[i], sessionId);
+    }
+    const serialApplyMs = performance.now() - tApply0;
+
+    if (shouldLogAiTiming()) {
+      console.info(
+        "[door-game]",
+        JSON.stringify({
+          event: "doorWave",
+          sessionId,
+          batchSize: ready.length,
+          parallelDecideMs: Math.round(parallelDecideMs),
+          serialApplyMs: Math.round(serialApplyMs),
+        }),
+      );
+    }
   }
 }
 
 /**
  * After a human closes a full turn, advance AI empires that still have daily turns remaining.
  * Call from `after()` so Next.js does not drop the work when the HTTP handler returns.
+ *
+ * Uses `runOutsideTransaction` so `getDb()` returns the root Prisma client — `after()` callbacks
+ * inherit the parent's `AsyncLocalStorage` context, which may still hold a committed (dead)
+ * interactive-transaction client from `withCommitLock`.
  */
 export async function runDoorGameAITurns(sessionId: string): Promise<void> {
   const existing = doorAiInFlight.get(sessionId);
   if (existing) return existing;
 
-  const p = drainDoorGameAiTurns(sessionId).finally(() => {
+  const p = runOutsideTransaction(() => drainDoorGameAiTurns(sessionId)).finally(() => {
     doorAiInFlight.delete(sessionId);
   });
   doorAiInFlight.set(sessionId, p);

@@ -1,6 +1,6 @@
 # Plan: Parallel `getAIMove` / `getAIMoveDecision` for door-game AI drain
 
-**Status:** Implemented (default: parallel decide **off** — set `DOOR_AI_PARALLEL_DECIDE=1` to enable)  
+**Status:** Implemented — batched parallel decide is **always on** (fixed **`DOOR_AI_DECIDE_BATCH_SIZE`** **4** in `door-game-turns.ts`); no env toggle.  
 **Owner:** Engineering  
 **Last updated:** 2026-04-08
 
@@ -76,7 +76,7 @@ Today’s **`findFirst`** ordering (`fullTurnsUsedThisRound` asc, `turnOrder` as
 
 **Batch contents:**
 
-- **Option A (recommended):** Fixed **maximum batch size** `N` (default **4**, env `DOOR_AI_DECIDE_BATCH_MAX`). Take the **first N** eligible players in sort order. **Rationale:** Predictable load; avoids 20-way `Promise.all`.
+- **Batch size:** Fixed **`DOOR_AI_DECIDE_BATCH_SIZE`** (**4**) in code. Take the **first N** eligible players in sort order.
 
 - **Option B:** All eligible players in one wave — **risky** for Gemini rate limits and CPU.
 
@@ -112,8 +112,7 @@ Today’s **`findFirst`** ordering (`fullTurnsUsedThisRound` asc, `turnOrder` as
 
 ### 5.6 Feature flag
 
-- **`DOOR_AI_PARALLEL_DECIDE`** — `0` | `1` (default **`0`** until validated).
-- When **`0`**, `drainDoorGameAiTurns` uses **current** `findFirst` + `runOneDoorGameAI` (no behavior change).
+- **Removed:** always use batched parallel decide + serial apply (no env toggle).
 
 ### 5.7 Refactor prerequisites (code structure)
 
@@ -149,7 +148,7 @@ Today’s **`findFirst`** ordering (`fullTurnsUsedThisRound` asc, `turnOrder` as
 ### 7.2 Integration / E2E (`tests/e2e/door-game.test.ts`)
 
 - **Default (parallel decide off):** Human + one AI; human + **two** AIs — calendar day rolls, all AIs reach `turnsPlayed >= actionsPerDay` on the leaderboard.
-- **Flag on:** Set `DOOR_AI_PARALLEL_DECIDE=1` in `.env` for the Compose `app` container and re-run `npm run docker:test:e2e` — same assertions; exercises batched decide + serial apply.
+- E2E always exercises the batched drain (`docker:test:e2e`).
 
 ### 7.3 Manual / staging
 
@@ -211,12 +210,12 @@ Today’s **`findFirst`** ordering (`fullTurnsUsedThisRound` asc, `turnOrder` as
 ## 13. Checklist (implementation)
 
 - [x] Extract `applyDoorGameAIMove` / `decideDoorGameAIMove` (or equivalent names).
-- [x] Serial path unchanged; `DOOR_AI_PARALLEL_DECIDE` unset/false default.
+- [x] Serial-only drain removed; single path only.
 - [x] Batch collection + sort order matches §5.1.
 - [x] `Promise.all` + per-player timeout (same as serial).
 - [x] Serial apply loop + existing `closeFullTurn` / `tryRollRound` interaction.
 - [x] `GEMINI_MAX_CONCURRENT` / `DOOR_AI_MAX_CONCURRENT_MCTS` in `ai-concurrency.ts` + `gemini.ts`.
-- [x] Optional `doorWave` logs when `DOOR_AI_LOG_WAVE` or `SRX_LOG_AI_TIMING`.
+- [x] `doorWave` logs when `SRX_LOG_AI_TIMING` is set.
 - [x] Unit tests (`tests/unit/door-game-ai-parallel.test.ts`); E2E unchanged (parallel off by default).
 - [x] GAME-SPEC / CLAUDE / README env updates.
 

@@ -1,6 +1,6 @@
-# Local development: PostgreSQL + Next.js dev server (hot reload via bind mount).
-# Usage: docker compose up --build
-# App: http://localhost:3000  ·  DB: localhost:5432 (postgres / postgres / srx)
+# Local development: PostgreSQL + pre-built Next.js app (`next start`). Source is baked into the
+# image at build time (no bind mount). Pick up code changes: `npm run deploy`.
+# App: http://localhost:3000  ·  DB: localhost:5433 (postgres / postgres / srx)
 
 services:
   postgres:
@@ -32,10 +32,6 @@ services:
     environment:
       # Overrides .env so the app reaches the compose network (not host localhost)
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/srx
-      NODE_ENV: development
-      # File watching inside Docker (especially macOS/Windows bind mounts)
-      WATCHPACK_POLLING: "true"
-      CHOKIDAR_USEPOLLING: "true"
     env_file:
       - path: .env
         required: false
@@ -52,12 +48,6 @@ services:
       timeout: 5s
       retries: 12
       start_period: 45s
-    volumes:
-      - .:/app
-      - srx_node_modules:/app/node_modules
-      - srx_next:/app/.next
 
 volumes:
   srx_pgdata:
-  srx_node_modules:
-  srx_next:
