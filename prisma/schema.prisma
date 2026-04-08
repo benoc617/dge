@@ -344,6 +344,8 @@ model GameSession {
   startedAt    DateTime @default(now())
   finishedAt   DateTime?
 
+  /** Identifies which game engine definition runs this session (e.g. "srx"). */
+  gameType          String     @default("srx")
   turnMode          TurnMode   @default(sequential)
   /** Calendar day counter (door-game / simultaneous mode). */
   dayNumber         Int        @default(1)

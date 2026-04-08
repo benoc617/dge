@@ -15,7 +15,8 @@
     "./ai-concurrency": "./src/ai-concurrency.ts",
     "./door-ai-runtime-settings": "./src/door-ai-runtime-settings.ts",
     "./llm": "./src/llm.ts",
-    "./ai-runner": "./src/ai-runner.ts"
+    "./ai-runner": "./src/ai-runner.ts",
+    "./registry": "./src/registry.ts"
   },
   "dependencies": {
     "@dge/shared": "*"

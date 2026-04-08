@@ -110,6 +110,45 @@ export interface TickResult<TState> {
 }
 
 // ---------------------------------------------------------------------------
+// Full-track migration shims
+// ---------------------------------------------------------------------------
+
+/**
+ * Options passed by the orchestrator to `GameDefinition.processFullAction`.
+ * These map directly onto the existing SRX `processAction` option shape so
+ * games don't need to translate them.
+ *
+ * The orchestrator sets these based on turn mode:
+ *   - Sequential: undefined (processAction uses defaults)
+ *   - Door-game end_turn:    { tickOptions: { decrementTurnsLeft: false }, keepTickProcessed: false,  skipEndgameSettlement: true }
+ *   - Door-game other action:{ tickOptions: { decrementTurnsLeft: false }, keepTickProcessed: true,   skipEndgameSettlement: true }
+ */
+export interface FullActionOptions {
+  tickOptions?: { decrementTurnsLeft?: boolean };
+  keepTickProcessed?: boolean;
+  skipEndgameSettlement?: boolean;
+  /** Arbitrary extra meta (e.g. llmSource, aiReasoning) passed to TurnLog. */
+  logMeta?: Record<string, unknown>;
+}
+
+/**
+ * Minimum shape returned by `GameDefinition.processFullAction`.
+ * Must structurally include `success` and `message`; game-specific fields
+ * are carried through as unknown extras (e.g. `actionDetails` for combat).
+ */
+export interface FullActionResult {
+  success: boolean;
+  message: string;
+  [key: string]: unknown;
+}
+
+/**
+ * Turn report returned by `GameDefinition.processFullTick`.
+ * Null = tick was already processed (idempotent).
+ */
+export type FullTurnReport = Record<string, unknown> | null;
+
+// ---------------------------------------------------------------------------
 // Admin Extension
 // ---------------------------------------------------------------------------
 
@@ -253,4 +292,51 @@ export interface GameDefinition<TState> {
 
   /** Admin panel extensions for this game. */
   admin?: GameAdminConfig;
+
+  // -------------------------------------------------------------------------
+  // Full-track migration shims (Phase 5+)
+  //
+  // These optional methods let a game plug its existing async action/tick
+  // implementations into the orchestrator's sequential and door-game flows
+  // without yet extracting every handler into the pure applyAction.
+  //
+  // Games that have fully migrated to pure applyAction can omit these; the
+  // orchestrator will use applyAction + saveState instead.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Run a player action via the game's existing full-track implementation
+   * (async, DB-backed). Called by the orchestrator in place of the pure
+   * applyAction + saveState path during incremental migration.
+   *
+   * The `opts` parameter carries turn-mode-specific overrides set by the
+   * orchestrator (e.g. door-game tick/settlement flags).
+   */
+  processFullAction?(
+    playerId: string,
+    action: string,
+    params: Record<string, unknown>,
+    opts?: FullActionOptions,
+  ): Promise<FullActionResult>;
+
+  /**
+   * Run the economy tick via the game's existing full-track implementation.
+   * Returns the turn report (or null if already processed / not applicable).
+   */
+  processFullTick?(playerId: string): Promise<FullTurnReport>;
+
+  /**
+   * Fire-and-forget AI sequence for the session (sequential mode).
+   * The orchestrator calls this after advancing the turn; games that have no
+   * AI, or that manage AI externally, can omit this.
+   */
+  runAiSequence?(sessionId: string): Promise<void>;
+
+  /**
+   * Post-action close for door-game mode: called after a successful non-end_turn
+   * action to close the full-turn slot. Games override this to add extra work
+   * (e.g. SRX creates a TurnLog row before calling closeFullTurn). When omitted,
+   * the orchestrator calls the engine's closeFullTurn directly.
+   */
+  postActionClose?(playerId: string, sessionId: string): Promise<void>;
 }

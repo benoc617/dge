@@ -1,20 +1,11 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getDb } from "@/lib/db-context";
-import { processAction, type ActionType } from "@/lib/game-engine";
-import { getCurrentTurn, advanceTurn } from "@/lib/turn-order";
-import { runAISequence } from "@/lib/ai-runner";
-import {
-  withCommitLock,
-  GalaxyBusyError,
-  canPlayerAct,
-  openFullTurn,
-  closeFullTurn,
-  doorGameAutoCloseFullTurnAfterAction,
-  enqueueAiTurnsForSession,
-} from "@/lib/door-game-turns";
+import { requireGame } from "@dge/engine/registry";
+import { GalaxyBusyError } from "@/lib/db-context";
+import { enqueueAiTurnsForSession } from "@/lib/ai-job-queue";
 import { logSrxTiming, msBetween, msElapsed } from "@/lib/srx-timing";
 import { invalidatePlayerAndLeaderboard } from "@/lib/game-state-service";
+import "@/lib/srx-registration"; // ensure SRX game is registered before any dispatch
 
 export async function POST(req: NextRequest) {
   const tRoute = performance.now();
@@ -28,12 +19,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "playerName and action required" }, { status: 400 });
   }
 
-  logSrxTiming("action_request", {
-    requestAtIso,
-    requestAtMs,
-    playerName,
-    action,
-  });
+  logSrxTiming("action_request", { requestAtIso, requestAtMs, playerName, action });
 
   const player = await prisma.player.findFirst({
     where: { name: playerName, empire: { turnsLeft: { gt: 0 } } },
@@ -45,15 +31,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Player not found" }, { status: 404 });
   }
 
+  // Legacy path: player has no session — call processFullAction directly (no turn check needed).
   if (!player.gameSessionId) {
-    const result = await processAction(player.id, action as ActionType, params);
+    const { definition } = requireGame("srx");
+    const result = await definition.processFullAction!(player.id, action, params);
     logSrxTiming("action_route_no_session", {
-      requestAtIso,
-      requestAtMs,
-      committedAtIso: new Date().toISOString(),
-      committedAtMs: Date.now(),
-      playerName,
-      action,
+      requestAtIso, requestAtMs,
+      committedAtIso: new Date().toISOString(), committedAtMs: Date.now(),
+      playerName, action,
       routeTotalMs: msElapsed(tRoute),
       jsonParseMs: msBetween(tRoute, tAfterJson),
       findPlayerMs: msBetween(tAfterJson, tAfterPlayer),
@@ -64,151 +49,73 @@ export async function POST(req: NextRequest) {
 
   const sess = await prisma.gameSession.findUnique({
     where: { id: player.gameSessionId },
-    select: { turnMode: true, waitingForHuman: true },
+    select: { turnMode: true, waitingForHuman: true, gameType: true },
   });
   const tAfterSess = performance.now();
   const sessionLookupMs = msBetween(tAfterPlayer, tAfterSess);
 
+  if (sess?.waitingForHuman) {
+    return NextResponse.json({
+      success: false,
+      error: "Galaxy has not started yet.",
+      waitingForGameStart: true,
+    }, { status: 409 });
+  }
+
+  const gameType = sess?.gameType ?? "srx";
+  const game = requireGame(gameType);
+
+  // -------------------------------------------------------------------------
+  // Door-game (simultaneous) path
+  // -------------------------------------------------------------------------
   if (sess?.turnMode === "simultaneous") {
-    if (sess.waitingForHuman) {
-      return NextResponse.json({
-        success: false,
-        error: "Galaxy has not started yet.",
-        waitingForGameStart: true,
-      }, { status: 409 });
-    }
-
+    const tLock0 = performance.now();
     try {
-      const tLock0 = performance.now();
-      const res = await withCommitLock(player.gameSessionId, async () => {
-        const t0 = performance.now();
-        const p = await getDb().player.findUnique({
-          where: { id: player.id },
-          include: { empire: true },
-        });
-        if (!p?.empire) {
-          return NextResponse.json({ error: "Player not found" }, { status: 404 });
-        }
+      const { result, scheduleAiDrain, constraintError } = await game.orchestrator.processDoorAction(
+        player.gameSessionId,
+        player.id,
+        action,
+        params,
+      );
 
-        const session = await getDb().gameSession.findUnique({
-          where: { id: player.gameSessionId! },
-          select: { actionsPerDay: true },
-        });
-        if (!session) {
-          return NextResponse.json({ error: "Session not found" }, { status: 404 });
-        }
+      const committedAtMs = Date.now();
+      const committedAtIso = new Date().toISOString();
 
-        const e = p.empire;
-        if (!canPlayerAct(e, session.actionsPerDay)) {
-          return NextResponse.json(
-            { success: false, error: "No full turns remaining today in this calendar round." },
-            { status: 409 },
-          );
-        }
+      // 409 outcomes from within the lock (canPlayerAct, no open turn, not found)
+      if (constraintError) {
+        return NextResponse.json(
+          { success: false, error: result.message },
+          { status: 409 },
+        );
+      }
 
-        const tLoadDone = performance.now();
-        let openFullTurnMs = 0;
-        if (!e.turnOpen) {
-          if (action === "end_turn") {
-            return NextResponse.json(
-              {
-                success: false,
-                error: "No open turn to end. Open a turn with POST /api/game/tick first (or take an action).",
-              },
-              { status: 409 },
-            );
-          }
-          const tOpen = performance.now();
-          await openFullTurn(p.id);
-          openFullTurnMs = msElapsed(tOpen);
-        }
-
-        const doorOpts =
-          action === "end_turn"
-            ? {
-                tickOptions: { decrementTurnsLeft: false as const },
-                keepTickProcessed: false as const,
-                skipEndgameSettlement: true as const,
-              }
-            : {
-                tickOptions: { decrementTurnsLeft: false as const },
-                keepTickProcessed: true as const,
-                skipEndgameSettlement: true as const,
-              };
-
-        const tProc0 = performance.now();
-        const result = await processAction(p.id, action as ActionType, params, doorOpts);
-        const processActionMs = msElapsed(tProc0);
-        const sid = p.gameSessionId;
-
-        let closePathMs = 0;
-        if (result.success && action === "end_turn" && sid) {
-          const tc = performance.now();
-          await closeFullTurn(p.id, sid);
-          closePathMs = msElapsed(tc);
-          void invalidatePlayerAndLeaderboard(p.id, sid);
-          after(() => {
-            void enqueueAiTurnsForSession(sid).catch((err) => {
-              console.error("[door-game] enqueueAiTurnsForSession after human end_turn", sid, err);
-            });
-          });
-        }
-
-        if (result.success && action !== "end_turn" && sid) {
-          const tc = performance.now();
-          await doorGameAutoCloseFullTurnAfterAction(p.id, sid);
-          closePathMs = msElapsed(tc);
-          void invalidatePlayerAndLeaderboard(p.id, sid);
+      if (result.success) {
+        void invalidatePlayerAndLeaderboard(player.id, player.gameSessionId);
+        if (scheduleAiDrain) {
+          const sid = player.gameSessionId;
           after(() => {
             void enqueueAiTurnsForSession(sid).catch((err) => {
               console.error("[door-game] enqueueAiTurnsForSession after human action", sid, err);
             });
           });
         }
+      }
 
-        const tInnerEnd = performance.now();
-        logSrxTiming("door_action", {
-          requestAtIso,
-          requestAtMs,
-          playerName,
-          action,
-          sessionId: player.gameSessionId,
-          loadMs: msBetween(t0, tLoadDone),
-          openFullTurnMs,
-          processActionMs,
-          closePathMs,
-          lockInnerMs: msBetween(t0, tInnerEnd),
-          lockTotalMs: msElapsed(tLock0),
-          success: result.success,
-        });
-
-        return NextResponse.json(result);
-      });
-      const committedAtMs = Date.now();
-      const committedAtIso = new Date().toISOString();
       logSrxTiming("door_action_route", {
-        requestAtIso,
-        requestAtMs,
-        committedAtIso,
-        committedAtMs,
-        playerName,
-        action,
-        sessionId: player.gameSessionId,
+        requestAtIso, requestAtMs, committedAtIso, committedAtMs,
+        playerName, action, sessionId: player.gameSessionId,
         routeTotalMs: msElapsed(tRoute),
         jsonParseMs: msBetween(tRoute, tAfterJson),
         findPlayerMs: msBetween(tAfterJson, tAfterPlayer),
         sessionLookupMs,
-        preLockMs: msBetween(tRoute, tLock0),
         lockCallMs: msElapsed(tLock0),
+        success: result.success,
       });
-      return res;
+      return NextResponse.json(result);
     } catch (err) {
       if (err instanceof GalaxyBusyError) {
         logSrxTiming("door_action_galaxy_busy", {
-          requestAtIso,
-          requestAtMs,
-          playerName,
-          action,
+          requestAtIso, requestAtMs, playerName, action,
           sessionId: player.gameSessionId,
           routeTotalMs: msElapsed(tRoute),
           jsonParseMs: msBetween(tRoute, tAfterJson),
@@ -224,10 +131,20 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const tGetTurn0 = performance.now();
-  const turn = await getCurrentTurn(player.gameSessionId);
-  const getCurrentTurnMs = msElapsed(tGetTurn0);
-  if (!turn) {
+  // -------------------------------------------------------------------------
+  // Sequential path
+  // -------------------------------------------------------------------------
+  const tSeq0 = performance.now();
+  const outcome = await game.orchestrator.processSequentialAction(
+    player.gameSessionId,
+    player.id,
+    action,
+    params,
+  );
+  const tSeq1 = performance.now();
+
+  if (outcome.noActiveTurn) {
+    // Re-check waitingForHuman (getCurrentTurn returns null for lobby too).
     const s = await prisma.gameSession.findUnique({
       where: { id: player.gameSessionId },
       select: { waitingForHuman: true },
@@ -239,68 +156,40 @@ export async function POST(req: NextRequest) {
         waitingForGameStart: true,
       }, { status: 409 });
     }
-    return NextResponse.json({
-      success: false,
-      error: "No active turn in this session.",
-    }, { status: 409 });
+    return NextResponse.json({ success: false, error: "No active turn in this session." }, { status: 409 });
   }
-  if (turn.currentPlayerId !== player.id) {
+
+  if (outcome.notYourTurn) {
     return NextResponse.json({
-      error: `It's ${turn.currentPlayerName}'s turn`,
+      error: `It's ${outcome.currentPlayerName}'s turn`,
       success: false,
       notYourTurn: true,
-      currentTurnPlayer: turn.currentPlayerName,
+      currentTurnPlayer: outcome.currentPlayerName,
     }, { status: 409 });
   }
 
-  const tSeq0 = performance.now();
-  const result = await processAction(player.id, action as ActionType, params);
-  const tSeq1 = performance.now();
-
   let advanceTurnMs = 0;
-  if (result.success && player.gameSessionId) {
-    const ta = performance.now();
-    await advanceTurn(player.gameSessionId);
-    advanceTurnMs = msElapsed(ta);
-    runAISequence(player.gameSessionId).catch(() => {});
+  if (outcome.result.success && player.gameSessionId) {
+    // advanceTurn + runAiSequence already happened inside processSequentialAction.
+    advanceTurnMs = msBetween(tSeq0, tSeq1); // total includes advance+ai fire
     void invalidatePlayerAndLeaderboard(player.id, player.gameSessionId);
-  } else if (result.success) {
+  } else if (outcome.result.success) {
     void invalidatePlayerAndLeaderboard(player.id, null);
   }
 
-  const tSeq2 = performance.now();
   const committedAtMs = Date.now();
   const committedAtIso = new Date().toISOString();
-  logSrxTiming("action_sequential", {
-    requestAtIso,
-    requestAtMs,
-    committedAtIso,
-    committedAtMs,
-    playerName,
-    action,
-    sessionId: player.gameSessionId,
-    processActionMs: msBetween(tSeq0, tSeq1),
-    advanceTurnMs,
-    routeTotalMs: msBetween(tSeq0, tSeq2),
-    success: result.success,
-  });
   logSrxTiming("action_route_sequential", {
-    requestAtIso,
-    requestAtMs,
-    committedAtIso,
-    committedAtMs,
-    playerName,
-    action,
-    sessionId: player.gameSessionId,
+    requestAtIso, requestAtMs, committedAtIso, committedAtMs,
+    playerName, action, sessionId: player.gameSessionId,
     routeTotalMs: msElapsed(tRoute),
     jsonParseMs: msBetween(tRoute, tAfterJson),
     findPlayerMs: msBetween(tAfterJson, tAfterPlayer),
     sessionLookupMs,
-    getCurrentTurnMs,
     processActionMs: msBetween(tSeq0, tSeq1),
     advanceTurnMs,
-    success: result.success,
+    success: outcome.result.success,
   });
 
-  return NextResponse.json(result);
+  return NextResponse.json(outcome.result);
 }

@@ -10,3 +10,4 @@ export * from "./ai-concurrency";
 export * from "./door-ai-runtime-settings";
 export * from "./llm";
 export * from "./ai-runner";
+export * from "./registry";

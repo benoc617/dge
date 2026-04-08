@@ -23,7 +23,7 @@
  *   - API routes remain unchanged (still call processAction directly)
  */
 
-import type { GameDefinition, ActionResult, TickResult, Move, Rng } from "@dge/shared";
+import type { GameDefinition, ActionResult, TickResult, Move, Rng, FullActionOptions, FullActionResult, FullTurnReport } from "@dge/shared";
 import type { SrxWorldState } from "./types";
 import {
   type PureEmpireState,
@@ -37,6 +37,9 @@ import {
   cloneEmpire,
 } from "@/lib/sim-state";
 import type { ActionType } from "@/lib/game-engine";
+import { processAction, runAndPersistTick } from "@/lib/game-engine";
+import { runAISequence as srxRunAISequence } from "@/lib/ai-runner";
+import { doorGameAutoCloseFullTurnAfterAction } from "@/lib/door-game-turns";
 import { getDb } from "@/lib/db-context";
 
 // ---------------------------------------------------------------------------
@@ -305,5 +308,36 @@ export const srxGameDefinition: GameDefinition<SrxWorldState> = {
       };
     });
     return { ...state, empires };
+  },
+
+  // -------------------------------------------------------------------------
+  // Full-track migration shims (Phase 5)
+  //
+  // These proxy directly to the existing SRX game-engine implementations so
+  // the orchestrator can drive sequential + door-game flows without each
+  // action handler being fully extracted into the pure applyAction yet.
+  // -------------------------------------------------------------------------
+
+  async processFullAction(
+    playerId: string,
+    action: string,
+    params: Record<string, unknown>,
+    opts?: FullActionOptions,
+  ): Promise<FullActionResult> {
+    // processAction returns { success, message, ...extra }; cast is safe.
+    return processAction(playerId, action as ActionType, params, opts) as Promise<FullActionResult>;
+  },
+
+  async processFullTick(playerId: string): Promise<FullTurnReport> {
+    // TurnReport is structurally compatible with FullTurnReport; cast satisfies TS.
+    return runAndPersistTick(playerId) as Promise<FullTurnReport>;
+  },
+
+  async runAiSequence(sessionId: string): Promise<void> {
+    await srxRunAISequence(sessionId);
+  },
+
+  async postActionClose(playerId: string, sessionId: string): Promise<void> {
+    await doorGameAutoCloseFullTurnAfterAction(playerId, sessionId);
   },
 };

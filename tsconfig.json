@@ -33,6 +33,7 @@
       "@dge/engine/door-ai-runtime-settings": ["./packages/engine/src/door-ai-runtime-settings.ts"],
       "@dge/engine/llm": ["./packages/engine/src/llm.ts"],
       "@dge/engine/ai-runner": ["./packages/engine/src/ai-runner.ts"],
+      "@dge/engine/registry": ["./packages/engine/src/registry.ts"],
       "@dge/engine/*": ["./packages/engine/src/*"],
       "@dge/shell": ["./packages/shell/src/index.ts"],
       "@dge/shell/*": ["./packages/shell/src/*"],
