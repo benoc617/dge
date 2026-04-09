@@ -28,6 +28,10 @@ export type AIMoveContext = {
    * `target` for attack_* and covert_op. Empty when every rival is protected.
    */
   rivalAttackTargets: string[];
+  /** AI player's own player ID — used by MCTS to fetch rival empires. */
+  playerId?: string;
+  /** Session ID — used by MCTS to fetch rival empires from the same game. */
+  gameSessionId?: string;
 };
 
 /** Persisted on `TurnLog.details` (via `logMeta`) for post-hoc latency analysis. */

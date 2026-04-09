@@ -64,6 +64,8 @@ async function buildAIMoveContext(player: PlayerWithEmpireForAI) {
     commanderName: player.name,
     rivalNames: rivals.map((r) => r.name),
     rivalAttackTargets: computeRivalAttackTargets(rivals),
+    playerId: player.id,
+    gameSessionId: gameSessionId ?? undefined,
   };
 
   const recentEvents = gameSessionId
@@ -94,9 +96,10 @@ async function buildAIMoveContext(player: PlayerWithEmpireForAI) {
     foodSellRate: empire.foodSellRate,
     oreSellRate: empire.oreSellRate,
     petroleumSellRate: empire.petroleumSellRate,
-    planets: empire.planets.map((p: { type: string; shortTermProduction: number }) => ({
+    planets: empire.planets.map((p: { type: string; shortTermProduction: number; longTermProduction: number }) => ({
       type: p.type,
       shortTermProduction: p.shortTermProduction,
+      longTermProduction: p.longTermProduction,
     })),
     army: empire.army ? {
       soldiers: empire.army.soldiers,
@@ -110,10 +113,25 @@ async function buildAIMoveContext(player: PlayerWithEmpireForAI) {
       commandShipStrength: empire.army.commandShipStrength,
       effectiveness: empire.army.effectiveness,
       covertPoints: empire.army.covertPoints,
+      soldiersLevel: empire.army.soldiersLevel,
+      fightersLevel: empire.army.fightersLevel,
+      stationsLevel: empire.army.stationsLevel,
+      lightCruisersLevel: empire.army.lightCruisersLevel,
+      heavyCruisersLevel: empire.army.heavyCruisersLevel,
     } : undefined,
     research: empire.research ? {
       accumulatedPoints: empire.research.accumulatedPoints,
       unlockedTechIds: empire.research.unlockedTechIds as string[],
+    } : undefined,
+    supplyRates: empire.supplyRates ? {
+      rateSoldier: empire.supplyRates.rateSoldier,
+      rateFighter: empire.supplyRates.rateFighter,
+      rateStation: empire.supplyRates.rateStation,
+      rateHeavyCruiser: empire.supplyRates.rateHeavyCruiser,
+      rateCarrier: empire.supplyRates.rateCarrier,
+      rateGeneral: empire.supplyRates.rateGeneral,
+      rateCovert: empire.supplyRates.rateCovert,
+      rateCredits: empire.supplyRates.rateCredits,
     } : undefined,
   };
 

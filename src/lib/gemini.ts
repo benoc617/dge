@@ -9,6 +9,7 @@
  * public-API symbols that callers historically obtained from here.
  */
 
+import { prisma } from "@/lib/prisma";
 import { targetHasNewEmpireProtection } from "@/lib/empire-protection";
 import * as rng from "@/lib/rng";
 import {
@@ -120,7 +121,7 @@ interface EmpireState {
   foodSellRate: number;
   oreSellRate: number;
   petroleumSellRate: number;
-  planets: { type: string; shortTermProduction: number }[];
+  planets: { type: string; shortTermProduction: number; longTermProduction?: number }[];
   army: {
     soldiers: number;
     generals: number;
@@ -133,10 +134,25 @@ interface EmpireState {
     commandShipStrength: number;
     effectiveness: number;
     covertPoints: number;
+    soldiersLevel?: number;
+    fightersLevel?: number;
+    stationsLevel?: number;
+    lightCruisersLevel?: number;
+    heavyCruisersLevel?: number;
   };
   research?: {
     accumulatedPoints: number;
     unlockedTechIds: string[];
+  };
+  supplyRates?: {
+    rateSoldier: number;
+    rateFighter: number;
+    rateStation: number;
+    rateHeavyCruiser: number;
+    rateCarrier: number;
+    rateGeneral: number;
+    rateCovert: number;
+    rateCredits: number;
   };
 }
 
@@ -255,12 +271,13 @@ function logGetAIMoveTiming(payload: {
 async function mctsLocalFallback(
   state: EmpireState,
   budgetMs: number,
+  ctx?: AIMoveContext,
 ): Promise<{ action: string; reasoning: string; [key: string]: unknown } | null> {
   try {
     const seedVal = rng.getSeed();
     const localRng = seedVal !== null ? makeRng(seedVal) : undefined;
     const shape: PrismaEmpireShape = {
-      id: "optimal-ai",
+      id: ctx?.playerId ?? "optimal-ai",
       credits: state.credits ?? 0,
       food: state.food ?? 0,
       ore: state.ore ?? 0,
@@ -279,21 +296,43 @@ async function mctsLocalFallback(
       planets: (state.planets ?? []).map((p) => ({
         type: p.type,
         shortTermProduction: p.shortTermProduction,
-        longTermProduction: p.shortTermProduction,
+        longTermProduction: p.longTermProduction ?? p.shortTermProduction,
       })),
       army: {
         ...state.army,
         covertPoints: state.army?.covertPoints ?? 0,
         commandShipStrength: state.army?.commandShipStrength ?? 0,
-        soldiersLevel: 1, fightersLevel: 1, stationsLevel: 1,
-        lightCruisersLevel: 1, heavyCruisersLevel: 1,
+        soldiersLevel: state.army?.soldiersLevel ?? 1,
+        fightersLevel: state.army?.fightersLevel ?? 1,
+        stationsLevel: state.army?.stationsLevel ?? 1,
+        lightCruisersLevel: state.army?.lightCruisersLevel ?? 1,
+        heavyCruisersLevel: state.army?.heavyCruisersLevel ?? 1,
       },
       research: state.research ?? { accumulatedPoints: 0, unlockedTechIds: [] },
-      supplyRates: null,
+      supplyRates: state.supplyRates ?? null,
       loans: 0,
     };
-    const selfState = empireFromPrisma(shape, "optimal-ai");
-    const { states, playerIdx } = buildSearchStates(selfState, []);
+    const selfState = empireFromPrisma(shape, ctx?.commanderName ?? "optimal-ai");
+
+    // Fetch rival empires from DB so MCTS plays against real opponents (not solitaire).
+    let rivalStates: ReturnType<typeof empireFromPrisma>[] = [];
+    if (ctx?.gameSessionId && ctx?.playerId) {
+      try {
+        const rivalPlayers = await prisma.player.findMany({
+          where: { gameSessionId: ctx.gameSessionId, id: { not: ctx.playerId } },
+          include: {
+            empire: { include: { planets: true, army: true, research: true, supplyRates: true } },
+          },
+        });
+        rivalStates = rivalPlayers
+          .filter((p) => p.empire && p.empire.turnsLeft > 0)
+          .map((p) => empireFromPrisma(p.empire as unknown as PrismaEmpireShape, p.name));
+      } catch (err) {
+        console.warn("[srx-ai] mctsLocalFallback: failed to fetch rivals, proceeding with solitaire:", err instanceof Error ? err.message : String(err));
+      }
+    }
+
+    const { states, playerIdx } = buildSearchStates(selfState, rivalStates);
     const move = await searchOpponentMoveAsync(states, playerIdx, {
       strategy: "mcts",
       mcts: {
@@ -306,7 +345,7 @@ async function mctsLocalFallback(
     return {
       action: move.action,
       ...move.params,
-      reasoning: `MCTS(${budgetMs}ms budget): ${move.label}`,
+      reasoning: `MCTS(${budgetMs}ms, ${rivalStates.length} rivals): ${move.label}`,
     };
   } catch (err) {
     console.warn("[srx-ai] mctsLocalFallback exception — falling through to sim-strategy:", err instanceof Error ? err.message : String(err));
@@ -340,7 +379,7 @@ async function localFallback(
 ): Promise<{ action: string; target?: string; amount?: number; reasoning: string; opType?: number; [key: string]: unknown }> {
   // Optimal persona always uses MCTS (unchanged).
   if (persona.includes("Optimal") || persona.includes("optimal")) {
-    const mctsResult = await mctsLocalFallback(state, mctsBudgetMs ?? 45_000);
+    const mctsResult = await mctsLocalFallback(state, mctsBudgetMs ?? 45_000, ctx);
     if (mctsResult) return mctsResult as { action: string; reasoning: string; [key: string]: unknown };
   }
 
@@ -372,7 +411,7 @@ async function localFallback(
     planets: (s?.planets ?? []).map((p) => ({
       type: p.type,
       shortTermProduction: p.shortTermProduction,
-      longTermProduction:  p.shortTermProduction,
+      longTermProduction:  p.longTermProduction ?? p.shortTermProduction,
     })),
     army: {
       ...(army ?? {}),
@@ -387,14 +426,14 @@ async function localFallback(
       covertPoints:   army?.covertPoints ?? 0,
       commandShipStrength: army?.commandShipStrength ?? 0,
       effectiveness:  army?.effectiveness ?? 100,
-      soldiersLevel:       1,
-      fightersLevel:       1,
-      stationsLevel:       1,
-      lightCruisersLevel:  1,
-      heavyCruisersLevel:  1,
+      soldiersLevel:       army?.soldiersLevel ?? 1,
+      fightersLevel:       army?.fightersLevel ?? 1,
+      stationsLevel:       army?.stationsLevel ?? 1,
+      lightCruisersLevel:  army?.lightCruisersLevel ?? 1,
+      heavyCruisersLevel:  army?.heavyCruisersLevel ?? 1,
     },
     research: s?.research ?? { accumulatedPoints: 0, unlockedTechIds: [] },
-    supplyRates: null,
+    supplyRates: s?.supplyRates ?? null,
     loans: 0,
   };
   const pureState = empireFromPrisma(shape, "ai-fallback");

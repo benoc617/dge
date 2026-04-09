@@ -35,6 +35,8 @@ export async function POST(req: NextRequest) {
     commanderName: player.name,
     rivalNames: rivals.map((r) => r.name),
     rivalAttackTargets: computeRivalAttackTargets(rivals),
+    playerId: player.id,
+    gameSessionId: gameSessionId ?? undefined,
   };
 
   const recentEvents = gameSessionId
@@ -70,6 +72,7 @@ export async function POST(req: NextRequest) {
       planets: player.empire.planets.map((p) => ({
         type: p.type,
         shortTermProduction: p.shortTermProduction,
+        longTermProduction: p.longTermProduction,
       })),
       army: player.empire.army ? {
         soldiers: player.empire.army.soldiers,
@@ -83,10 +86,25 @@ export async function POST(req: NextRequest) {
         commandShipStrength: player.empire.army.commandShipStrength,
         effectiveness: player.empire.army.effectiveness,
         covertPoints: player.empire.army.covertPoints,
+        soldiersLevel: player.empire.army.soldiersLevel,
+        fightersLevel: player.empire.army.fightersLevel,
+        stationsLevel: player.empire.army.stationsLevel,
+        lightCruisersLevel: player.empire.army.lightCruisersLevel,
+        heavyCruisersLevel: player.empire.army.heavyCruisersLevel,
       } : undefined,
       research: player.empire.research ? {
         accumulatedPoints: player.empire.research.accumulatedPoints,
         unlockedTechIds: player.empire.research.unlockedTechIds as string[],
+      } : undefined,
+      supplyRates: player.empire.supplyRates ? {
+        rateSoldier: player.empire.supplyRates.rateSoldier,
+        rateFighter: player.empire.supplyRates.rateFighter,
+        rateStation: player.empire.supplyRates.rateStation,
+        rateHeavyCruiser: player.empire.supplyRates.rateHeavyCruiser,
+        rateCarrier: player.empire.supplyRates.rateCarrier,
+        rateGeneral: player.empire.supplyRates.rateGeneral,
+        rateCovert: player.empire.supplyRates.rateCovert,
+        rateCredits: player.empire.supplyRates.rateCredits,
       } : undefined,
     },
     eventMessages,
