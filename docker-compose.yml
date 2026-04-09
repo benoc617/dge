@@ -77,6 +77,8 @@ services:
       SRX_WORKER_SCRIPT: scripts/ai-worker.ts
       AI_WORKER_POLL_MS: "500"
       AI_WORKER_CONCURRENCY: "4"
+      # Give the MCTS search room to grow without hitting Node's default ~1.4 GB heap limit.
+      NODE_OPTIONS: "--max-old-space-size=4096"
       # Short Gemini/AI timeouts so E2E tests fall back to local heuristics quickly.
       GEMINI_TIMEOUT_MS: "3000"
       DOOR_AI_MOVE_TIMEOUT_MS: "3000"
