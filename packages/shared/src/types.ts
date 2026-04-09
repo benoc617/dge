@@ -455,7 +455,7 @@ export interface GameHttpAdapter {
   /**
    * Called after a Player joins an existing session (not the creator).
    *   SRX: no-op — starter empire is already in getPlayerCreateData
-   *   Chess: n/a — supportsJoin is false
+   *   Chess: initializes ChessState when human opponent joins (vs Human mode)
    */
   onPlayerJoined?(sessionId: string, playerId: string): Promise<void>;
 
@@ -467,6 +467,8 @@ export interface GameHttpAdapter {
   defaultTotalTurns: number;
   /** Default actions per day for simultaneous mode. SRX: 5. Chess: 1. */
   defaultActionsPerDay: number;
+  /** Default turn timeout in seconds. SRX: 86400 (24h). Chess: 43200 (12h). Falls back to 86400 if unset. */
+  defaultTurnTimeoutSecs?: number;
 
   // -------------------------------------------------------------------------
   // Hub games list (login response)

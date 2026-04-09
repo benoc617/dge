@@ -81,7 +81,8 @@ async function handleRegisterPost(req: NextRequest): Promise<Response> {
   }
 
   const inviteCode = generateInviteCode();
-  const timeout = typeof turnTimeoutSecs === "number" && turnTimeoutSecs > 0 ? turnTimeoutSecs : 86400;
+  const defaultTimeout = adapter.defaultTurnTimeoutSecs ?? 86400;
+  const timeout = typeof turnTimeoutSecs === "number" && turnTimeoutSecs > 0 ? turnTimeoutSecs : defaultTimeout;
 
   // turnMode comes from gameOptions (passed via the create form).
   const turnModeOption = typeof gameOptions.turnMode === "string" ? gameOptions.turnMode : "sequential";

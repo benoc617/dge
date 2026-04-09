@@ -297,7 +297,7 @@ The `TurnOrderHooks` and `DoorGameHooks` are injected at construction (from `Gam
 - Per-player turn state (tracked via `DoorGameHooks` — the engine has no opinion on where the game stores this; SRX uses `Empire` fields, another game could use `Player` fields or a separate table)
 - `openFullTurn(playerId, hooks)` — begins a full-turn slot (runs tick via hook, marks slot open)
 - `closeFullTurn(playerId, sessionId, hooks)` — ends slot, decrements game turns via hook
-- `tryRollRound(sessionId, hooks)` — advances `dayNumber` when all active players have exhausted daily slots or round timer expired; charges game turns for skipped slots via `forfeitSlots` hook
+- `tryRollRound(sessionId, hooks)` — advances `dayNumber` when all active players have exhausted daily slots or round timer expired; charges game turns for skipped slots via `forfeitSlots` hook. Forfeited slots decrement `turnsLeft` **and** increment `turnsPlayed` so the invariant `turnsPlayed + turnsLeft == totalTurns` holds. When `forfeitSlots` returns `remainingTurns === 0`, `runEndgameTick` is called for that player.
 - AI turns queued via `enqueueAiTurnsForSession` → `AiTurnJob` table → ai-worker picks up
 - Round timer: when `roundStartedAt + turnTimeoutSecs` elapses, `tryRollRound` skips remaining slots
 
@@ -495,7 +495,7 @@ See **Appendix A** for the full interface specifications referenced below.
 | 1 | Create `games/<name>/` with `package.json` (`@dge/<name>`), `tsconfig.json`, `src/definition.ts`, `docs/GAME-SPEC.md` |
 | 2 | Implement `GameDefinition<TState>` (§4, §A.1) — required: `loadState`, `saveState`, `applyAction`, `evalState`, `generateCandidateMoves` |
 | 3 | Implement `GameMetadata` (§A.2) — lobby card and create-game form |
-| 4 | Implement `GameHttpAdapter` (§A.3) — required: `buildStatus`, `getPlayerCreateData`, `defaultTotalTurns`, `defaultActionsPerDay` |
+| 4 | Implement `GameHttpAdapter` (§A.3) — required: `buildStatus`, `getPlayerCreateData`, `defaultTotalTurns`, `defaultActionsPerDay`; optional: `defaultTurnTimeoutSecs` |
 | 5 | Create `src/lib/<name>-registration.ts` — calls `registerGame("<name>", { definition, metadata, adapter, hooks? })` |
 | 6 | Add `import "@/lib/<name>-registration"` to `src/lib/game-bootstrap.ts` |
 | 7 | Create `src/components/<Name>GameScreen.tsx` — owns the full in-game UI |
@@ -683,6 +683,7 @@ interface GameHttpAdapter {
   getPlayerCreateData(): Record<string, unknown>
   defaultTotalTurns: number
   defaultActionsPerDay: number
+  defaultTurnTimeoutSecs?: number   // Falls back to 86400 (24h) if unset
 
   // Optional
   buildLeaderboard?(sessionId: string | null): Promise<unknown[]>
@@ -703,7 +704,7 @@ interface GameHttpAdapter {
 | `onSessionCreated` | After `GameSession` + creator `Player` committed — game-specific init (AI players, initial state) |
 | `onPlayerJoined` | After a player joins an existing session |
 | `buildLeaderboard` | `GET /api/game/leaderboard` |
-| `buildGameOver` | `POST /api/game/gameover` |
+| `buildGameOver` | `POST /api/game/gameover` — accepts `playerId` (preferred) or `playerName` for unambiguous lookup |
 | `computeHubTurnState` | `POST /api/auth/login` — isYourTurn for the hub game list |
 
 ### A.4 `TurnOrderHooks` (`@dge/engine`)
@@ -737,7 +738,7 @@ interface DoorGameHooks {
   // Per-player state writes
   openTurnSlot(playerId: string): Promise<void>
   closeTurnSlot(playerId: string): Promise<{ remainingTurns: number }>
-  forfeitSlots(playerId: string, slotsLeft: number, sessionId: string): Promise<{ remainingTurns: number }>
+  forfeitSlots(playerId: string, slotsLeft: number, sessionId: string): Promise<{ remainingTurns: number }>  // must also increment turnsPlayed
   resetDailySlots(sessionId: string): Promise<void>
 
   // Round state

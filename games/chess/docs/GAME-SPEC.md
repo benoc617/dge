@@ -6,7 +6,7 @@ This document specifies the chess game implementation on the Door Game Engine (D
 
 ## 1. Overview
 
-Standard chess for two players (one human, one AI). The AI uses Monte Carlo Tree Search (MCTS) — no Gemini or external API calls. All rules follow FIDE standard chess.
+Standard chess for two players. Supports two opponent modes: **vs AI** (MCTS — no Gemini) and **vs Human** (invite-based). Turn timer enforces a per-move time limit (default 12 hours). All rules follow FIDE standard chess.
 
 ---
 
@@ -22,7 +22,7 @@ interface ChessState {
   enPassant: [number, number] | null;  // target square for en passant capture
   halfMoveClock: number;          // moves since last pawn move or capture (50-move rule)
   fullMoveNumber: number;         // increments after black's move
-  status: GameStatus;             // "playing" | "checkmate" | "stalemate" | "draw_50move" | "draw_repetition" | "draw_insufficient" | "resigned"
+  status: GameStatus;             // "playing" | "checkmate" | "stalemate" | "draw_50move" | "draw_repetition" | "draw_insufficient" | "resigned" | "timeout"
   winner: "white" | "black" | null;
   whitePlayerId: string;          // Player.id of the white player (human, turnOrder 0)
   blackPlayerId: string;          // Player.id of the black player (AI, turnOrder 1)
@@ -89,7 +89,7 @@ No parameters. Sets `status: "resigned"` and `winner` to the opponent's color.
 
 ### `end_turn`
 
-Not used during normal play. When the turn timer fires, the `processEndTurn` hook in `chess-registration.ts` treats a timeout as a resignation.
+Not used during normal play. When the engine's turn timer fires (`getCurrentTurn()` detects `turnStartedAt + turnTimeoutSecs` has passed), the `processEndTurn` hook in `chess-registration.ts` sets `status: "timeout"` and `winner` to the opponent — the timed-out player loses. This is distinct from resignation.
 
 ---
 
@@ -144,23 +144,46 @@ Chess uses `GameSession.log` (a Prisma `Json` field) to store the entire `ChessS
 
 ## 7. Session Setup
 
-When a chess game is created via `POST /api/game/register` with `game: "chess"`:
+### 7.1 vs AI (default)
 
-1. The register route creates the `GameSession` and the human `Player` (turnOrder 0)
-2. `onSessionCreated` (in `chess-http-adapter.ts`) creates the AI `Player` (turnOrder 1, `isAI: true`, name "Stockfish Jr")
-3. Creates the initial `ChessState` (standard starting position) with `whitePlayerId` = human, `blackPlayerId` = AI
-4. Saves the state to `GameSession.log`
-5. Sets `currentTurnPlayerId` to the human player (white moves first)
+When created via `POST /api/game/register` with `game: "chess"` and `opponentMode: "ai"` (or omitted):
+
+1. Register route creates `GameSession` and human `Player` (turnOrder 0)
+2. `onSessionCreated` creates AI `Player` (turnOrder 1, `isAI: true`, name "Chess AI")
+3. Creates initial `ChessState` with `whitePlayerId` = human, `blackPlayerId` = AI
+4. Saves state to `GameSession.log`, sets `currentTurnPlayerId` to human (white first)
+5. Game starts immediately
+
+### 7.2 vs Human (invite)
+
+When created with `opponentMode: "human"`:
+
+1. Register route creates `GameSession` and creator `Player` (turnOrder 0)
+2. `onSessionCreated` sets `waitingForHuman: true`, `turnStartedAt: null`, no chess state yet
+3. Creator sees lobby UI with invite code
+4. Second player joins via `POST /api/game/join` with invite code
+5. `onPlayerJoined` hook initializes `ChessState` with creator = white, joiner = black
+6. Sets `currentTurnPlayerId`, `turnStartedAt`, clears `waitingForHuman`
+7. Game starts — both players now see the board
+
+### 7.3 Turn Timer
+
+Uses the engine's standard turn timer mechanism (`GameSession.turnStartedAt` + `turnTimeoutSecs`). The engine's `getCurrentTurn()` auto-detects timeout and calls the game's `processEndTurn` hook.
+
+- Default: **43200 seconds (12 hours)** per move — configurable at creation
+- On timeout: player loses (game status = `"timeout"`, opponent wins)
+- Timer resets each time a move is made (via `advanceTurn`)
+- AI turns have no practical timer concern (MCTS completes in ~3s)
 
 ### Session Defaults
 
 | Setting | Value |
 |---------|-------|
-| `defaultTotalTurns` | 500 (generous upper bound; games end by checkmate/stalemate/draw/resign) |
+| `defaultTotalTurns` | 9999 (no limit; games end by checkmate/stalemate/draw/resign/timeout) |
 | `defaultActionsPerDay` | 1 |
+| `defaultTurnTimeoutSecs` | 43200 (12 hours) |
 | `playerRange` | [2, 2] |
-| `supportsJoin` | false |
-| `autoCreateAI` | true |
+| `supportsJoin` | true |
 | `turnMode` | sequential |
 
 ---
@@ -174,9 +197,12 @@ Returns chess-specific status via `buildStatus` in `chess-http-adapter.ts`:
 ```json
 {
   "playerId": "...",
-  "playerName": "...",
+  "name": "...",
+  "sessionId": "...",
+  "galaxyName": "My Game",
+  "inviteCode": "a1b2c3d4",
+  "waitingForGameStart": false,
   "game": "chess",
-  "gameSessionId": "...",
   "isYourTurn": true,
   "myColor": "white",
   "board": [[...], ...],
@@ -186,7 +212,9 @@ Returns chess-specific status via `buildStatus` in `chess-http-adapter.ts`:
   "moveHistory": ["e2e4", "e7e5"],
   "capturedByWhite": [],
   "capturedByBlack": [],
-  "inCheck": false
+  "inCheck": false,
+  "turnDeadline": "2026-04-09T12:00:00.000Z",
+  "turnTimeoutSecs": 43200
 }
 ```
 
@@ -214,15 +242,20 @@ Standard engine action route. Body: `{ playerName, action: "move"|"resign", move
 
 Interactive graphical board rendered in `src/components/ChessGameScreen.tsx`:
 
-- **Board rendering** — 8×8 grid with alternating light/dark squares, Unicode chess pieces (♔♕♖♗♘♙♚♛♜♝♞♟)
+- **Header bar** — session name, turn status (YOUR TURN / THINKING… / timeout result), check alert, turn timer countdown, move number, player name and color
+- **Board rendering** — 8×8 grid with alternating light/dark squares, solid Unicode chess pieces with explicit white/black styling
 - **Move selection** — click a piece to select it (highlighted), legal destination squares show green dots, click a destination to complete the move
-- **Piece switching** — clicking another of your pieces switches selection (you don't have to move the first piece you click)
+- **Piece switching** — clicking another of your pieces switches selection
 - **Promotion dialog** — when a pawn reaches the back rank, a modal prompts for the promotion piece (Q/R/B/N)
+- **Optimistic UI** — moves apply to local state immediately; board updates before server confirmation
 - **Resign button** — concedes the game
-- **Status display** — shows check/checkmate/stalemate/draw/resigned status
-- **Captured pieces** — displayed for both sides
-- **AI polling** — after making a move, polls `GET /api/game/status` every second until it's the human's turn again (AI uses ~3s MCTS)
+- **Turn timer** — shared `TurnTimer` component shows countdown; turns red under 1 hour
+- **Captured pieces** — left panel, displayed for both sides
+- **Move history** — right panel, scrollable vertical list in standard algebraic notation
+- **Lobby state** — when waiting for a human opponent, shows invite code with click-to-copy
+- **AI polling** — after making a move, polls status every 1.5s until human's turn; lobby state polls every 3s
 - **Game over** — displays winner and final status; action returns 410 after game ends
+- **Timeout display** — "OPPONENT TIMED OUT" or "TIME EXPIRED" when a player loses on time
 
 ---
 

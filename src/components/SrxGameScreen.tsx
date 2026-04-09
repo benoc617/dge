@@ -6,6 +6,7 @@ import ActionPanel from "@/components/ActionPanel";
 import EventLog from "@/components/EventLog";
 import Leaderboard from "@/components/Leaderboard";
 import { HelpModal } from "@/components/HelpModal";
+import { TurnTimer } from "@/components/TurnTimer";
 import { classifyTurnEvents } from "@/lib/critical-events";
 import { apiFetch } from "@/lib/client-fetch";
 import { simultaneousDoorCommandCenterDisabled } from "@/lib/door-game-ui";
@@ -130,13 +131,13 @@ export function SrxGameScreen({
     const res = await apiFetch("/api/game/gameover", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ playerName: name }),
+      body: JSON.stringify({ playerName: name, playerId: sessionPlayerId }),
     });
     if (res.ok) {
       const data = await res.json();
       setGameOver(data as GameOverData);
     }
-  }, []);
+  }, [sessionPlayerId]);
 
   const refreshState = useCallback(
     async (name: string, pid?: string | null): Promise<GameState | null> => {
@@ -847,38 +848,6 @@ export function SrxGameScreen({
 // ---------------------------------------------------------------------------
 // Internal components
 // ---------------------------------------------------------------------------
-
-function TurnTimer({ deadline, isYourTurn }: { deadline: string; isYourTurn: boolean }) {
-  const [remaining, setRemaining] = useState("");
-  const [urgent, setUrgent] = useState(false);
-
-  useEffect(() => {
-    function tick() {
-      const ms = new Date(deadline).getTime() - Date.now();
-      if (ms <= 0) {
-        setRemaining("0:00:00");
-        setUrgent(true);
-        return;
-      }
-      const h = Math.floor(ms / 3600000);
-      const m = Math.floor((ms % 3600000) / 60000);
-      const s = Math.floor((ms % 60000) / 1000);
-      setRemaining(`${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`);
-      setUrgent(ms < 3600000);
-    }
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, [deadline]);
-
-  const color = urgent ? "text-red-400" : isYourTurn ? "text-yellow-400" : "text-green-700";
-
-  return (
-    <span className={`${color} text-xs tabular-nums`} title={isYourTurn ? "Time remaining for your turn" : "Time remaining for current player"}>
-      ⏱ {remaining}
-    </span>
-  );
-}
 
 function TurnSummaryModal({ data, onClose }: { data: TurnPopupData; onClose: () => void }) {
   const netIncome = data.income.total - data.expenses.total;

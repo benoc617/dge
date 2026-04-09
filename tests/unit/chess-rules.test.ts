@@ -319,3 +319,23 @@ describe("Chess rules — 50-move rule", () => {
     expect(after.status).toBe("draw_50move");
   });
 });
+
+describe("Chess rules — timeout status", () => {
+  it("GameStatus type includes 'timeout' for engine turn-timer forfeits", () => {
+    const state = createInitialState("w1", "b1");
+    expect(state.status).toBe("playing");
+
+    const timedOut: ChessState = { ...state, status: "timeout", winner: "black" };
+    expect(timedOut.status).toBe("timeout");
+    expect(timedOut.winner).toBe("black");
+  });
+
+  it("timeout state is distinct from resigned", () => {
+    const state = createInitialState("w1", "b1");
+    const resigned = resign(state, "white");
+    expect(resigned.status).toBe("resigned");
+
+    const timedOut: ChessState = { ...state, status: "timeout", winner: "black" };
+    expect(timedOut.status).not.toBe(resigned.status);
+  });
+});

@@ -28,7 +28,8 @@ export type GameStatus =
   | "draw_50move"
   | "draw_repetition"
   | "draw_insufficient"
-  | "resigned";
+  | "resigned"
+  | "timeout";
 
 export interface ChessState {
   board: Board;

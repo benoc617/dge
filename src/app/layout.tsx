@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Solar Realms Extreme",
-  description: "Turn-based galactic empire management game",
+  title: "Door Game Engine",
+  description: "Multiplayer turn-based game platform",
 };
 
 export default function RootLayout({

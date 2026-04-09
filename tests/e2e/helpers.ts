@@ -206,6 +206,13 @@ export async function postGameOver(playerName: string) {
   });
 }
 
+export async function postGameOverById(playerId: string, playerName: string) {
+  return api("/api/game/gameover", {
+    method: "POST",
+    body: JSON.stringify({ playerId, playerName }),
+  });
+}
+
 export async function getMessages(playerName: string) {
   return api(`/api/game/messages?player=${encodeURIComponent(playerName)}`);
 }

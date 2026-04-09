@@ -187,7 +187,7 @@ npm run docker:test:all     # Unit then E2E in container
 | `lobby.test.ts` | Public list, join, invite, galaxy name collision, session patch |
 | `admin.test.ts` | Admin login, galaxies CRUD, settings, password, **users list / force password / delete** |
 | `auth-account.test.ts` | `POST /api/auth/signup`, `POST /api/auth/login`, register links `UserAccount` |
-| `api-routes.test.ts` | `log`, `leaderboard`, `highscores`, `messages`, **gameover**, **`ai/run-all`**, **`ai/turn` (error path)** |
+| `api-routes.test.ts` | `log`, `leaderboard`, `highscores`, `messages`, **gameover** (by name and by playerId), **`ai/run-all`**, **`ai/turn` (error path)** |
 | `protection.test.ts` | Attacks vs protected rival blocked |
 | `combat-reporting.test.ts` | `message` + `actionDetails.combatResult` (pirate, guerrilla) |
 | `defender-alerts.test.ts` | Defender alert queue / ALERT lines |
@@ -334,7 +334,7 @@ This repo uses an **npm workspace monorepo** where game-agnostic infrastructure 
 - **Registration side-effects** — `src/lib/srx-registration.ts` wires SRX and `src/lib/chess-registration.ts` wires Chess into the engine registry (definition + `GameMetadata` + `GameHttpAdapter` + hooks); imported via `src/lib/game-bootstrap.ts`
 - **`src/lib/game-bootstrap.ts`** — single module that imports all game registration files; API routes import this once instead of individual game registration modules
 - **`src/lib/srx-http-adapter.ts`** — implements `GameHttpAdapter` for SRX; extracts game-specific payload construction from API routes (`buildStatus`, `buildLeaderboard`, `buildGameOver`, `getPlayerCreateData`, `onSessionCreated`, `computeHubTurnState`)
-- **`src/lib/chess-http-adapter.ts`** — implements `GameHttpAdapter` for Chess; `onSessionCreated` creates the AI player and stores initial board state in `GameSession.log`
+- **`src/lib/chess-http-adapter.ts`** — implements `GameHttpAdapter` for Chess; `onSessionCreated` creates AI or sets up lobby (human vs human); `onPlayerJoined` initializes board state when human opponent joins; stores state in `GameSession.log`
 
 ### Help system (per game)
 
@@ -381,12 +381,12 @@ Chess (`games/chess/`) is the reference implementation of a second game. To add 
 - **`tests/unit/registry.test.ts`** — covers `registerGame`, `getGame`, `requireGame`, `_clearRegistry`
 - **`tests/unit/orchestrator.test.ts`** — covers guard conditions, `canPlayerAct`, `sessionCannotHaveActiveTurn`
 - **`tests/unit/turn-order-hooks.test.ts`** — covers `TurnOrderHooks` interface contract
-- **`tests/unit/engine-door-game.test.ts`** — covers game-agnostic `openFullTurn` / `closeFullTurn`
+- **`tests/unit/engine-door-game.test.ts`** — covers game-agnostic `openFullTurn`, `closeFullTurn`, `tryRollRound` (forfeit slot handling, endgame tick on zero turns, day advancement)
 - **`tests/unit/srx-context-bridging.test.ts`** — covers `FullActionOptions.context` bridging in SRX definition
 - **`tests/unit/srx-game-definition.test.ts`** — covers SRX pure-track: `applyTick`, `applyAction`, `evalState`, `generateCandidateMoves`
 - **`tests/unit/door-game-turns.test.ts`** — covers door-game lifecycle (openFullTurn, closeFullTurn, tryRollRound)
 - **`tests/unit/turn-order-lobby.test.ts`** — covers `sessionCannotHaveActiveTurn` (sequential)
-- **`tests/unit/chess-rules.test.ts`** — covers all chess rules (move gen, check, checkmate, stalemate, castling, en passant, promotion, 50-move draw)
+- **`tests/unit/chess-rules.test.ts`** — covers all chess rules (move gen, check, checkmate, stalemate, castling, en passant, promotion, 50-move draw, timeout status)
 - **`tests/unit/chess-mcts.test.ts`** — covers MCTS search functions for chess
 - **`tests/e2e/chess.test.ts`** — covers full chess game flow (register, status, moves, play, AI response, resign, game-over)
 - **`tests/e2e/`** — full-track sequential + door-game integration (game-flow, multiplayer, door-game, auth, admin)
@@ -407,7 +407,7 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 ### Door-game / simultaneous turns (`GameSession.turnMode === simultaneous`)
 1. **Create:** `POST /api/game/register` may include `turnMode: "simultaneous"` (default `sequential`). Session tracks `dayNumber`, `actionsPerDay`, `roundStartedAt`; empires track `turnOpen`, `fullTurnsUsedThisRound`.
 2. **Open round:** humans and AIs can all take daily full turns; **no** API block while AIs owe slots. `GET /api/game/status` (and the action route after `closeFullTurn`) call **`enqueueAiTurnsForSession`** to insert pending `AiTurnJob` rows. The standalone **ai-worker** container claims jobs via `SELECT … FOR UPDATE SKIP LOCKED` and runs `runOneDoorGameAI`. After each job completes it cascades — re-enqueueing any AI that still owes daily slots. This replaces the former in-process `runDoorGameAITurns` background path for simultaneous mode. Each AI move races a `DOOR_AI_MOVE_TIMEOUT_MS` wall-clock cap.
-3. **Per full turn:** `POST /api/game/tick` opens a turn (`openFullTurn` → `runAndPersistTick` with `decrementTurnsLeft: false`, `turnOpen: true`). Each successful mutating `POST /api/game/action` (not `end_turn`) triggers `doorGameAutoCloseFullTurnAfterAction` + `closeFullTurn` so one action closes the slot; explicit `end_turn` / **Skip** is for skipping without acting. **`closeFullTurn`** decrements that empire’s **`turnsLeft`** by 1 (one game turn per miniturn). **Round timer** forfeit: **`tryRollRound`** charges **`turnsLeft`** for each skipped daily slot (same as closed full turns). `tryRollRound` advances the calendar day when every empire has used all daily full turns, **or** after **`roundStartedAt + turnTimeoutSecs`** skips remaining slots (`round_timeout` event). `GET /api/game/status` calls `tryRollRound` so polling can complete a round.
+3. **Per full turn:** `POST /api/game/tick` opens a turn (`openFullTurn` → `runAndPersistTick` with `decrementTurnsLeft: false`, `turnOpen: true`). Each successful mutating `POST /api/game/action` (not `end_turn`) triggers `doorGameAutoCloseFullTurnAfterAction` + `closeFullTurn` so one action closes the slot; explicit `end_turn` / **Skip** is for skipping without acting. **`closeFullTurn`** decrements that empire’s **`turnsLeft`** by 1 and increments **`turnsPlayed`** by 1 (one game turn per miniturn). **Round timer** forfeit: **`tryRollRound`** charges **`turnsLeft`** **and** increments **`turnsPlayed`** for each skipped daily slot (same accounting as closed full turns — `turnsPlayed + turnsLeft` always equals the original total). `tryRollRound` advances the calendar day when every empire has used all daily full turns, **or** after **`roundStartedAt + turnTimeoutSecs`** skips remaining slots (`round_timeout` event). `GET /api/game/status` calls `tryRollRound` so polling can complete a round.
 4. **All actions** use `POST /api/game/action` (with per-session advisory try-lock; **409** `galaxyBusy` on contention). After `closeFullTurn` or `end_turn`, the route calls `enqueueAiTurnsForSession` (fire-and-forget) to insert `AiTurnJob` rows for any AI still owed daily slots — the external **ai-worker** container picks these up. Core orchestration: `src/lib/door-game-turns.ts` (`openFullTurn`, `closeFullTurn`, `tryRollRound`, `enqueueAiTurnsForSession` re-export, `withCommitLock`). `src/lib/db-context.ts` (`getDb`, AsyncLocalStorage + transaction client for lock + engine; `withCommitLock` uses **60s** interactive transaction timeout).
 
 ### Turn order enforcement
@@ -461,9 +461,10 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - `src/lib/prisma.ts` — Prisma 7 client with `@prisma/adapter-mariadb` (`DATABASE_URL` from env only).
 - `src/lib/system-settings.ts` — masked Gemini key preview for admin settings API (never return raw secrets).
 - `scripts/ai-worker.ts` — standalone long-running process (separate Compose service). Polls `AiTurnJob` via `claimNextJob` (SKIP LOCKED), calls `runOneDoorGameAI`, then cascades with `enqueueAiTurnsForSession`. Supports `AI_WORKER_CONCURRENCY` parallel slots. Recovers stale (crashed-worker) jobs every 30 s. Env: `DATABASE_URL`, `REDIS_URL`, `GEMINI_API_KEY`, `AI_WORKER_POLL_MS`, `AI_WORKER_CONCURRENCY`, `SRX_LOG_AI_TIMING`.
-- `src/lib/chess-http-adapter.ts` — `GameHttpAdapter` for chess; `buildStatus` returns board, move history, captured pieces; `onSessionCreated` creates the AI player and initial board state in `GameSession.log`.
-- `src/lib/chess-registration.ts` — registers chess `GameDefinition`, `GameMetadata`, and hooks with the engine; timeout auto-skip resigns the player.
-- `src/components/ChessGameScreen.tsx` — full in-game chess UI; interactive board (Unicode pieces), point-and-click moves with legal-move highlighting, promotion dialog, resign, captured pieces, AI polling.
+- `src/lib/chess-http-adapter.ts` — `GameHttpAdapter` for chess; `buildStatus` returns board, move history, captured pieces, turn deadline; `onSessionCreated` creates AI (vs AI) or sets `waitingForHuman` (vs Human); `onPlayerJoined` initializes board state when human opponent joins; `defaultTurnTimeoutSecs: 43200` (12h).
+- `src/lib/chess-registration.ts` — registers chess `GameDefinition`, `GameMetadata`, and hooks with the engine; timeout sets `status: "timeout"` (loss on time, not resignation).
+- `src/components/ChessGameScreen.tsx` — full in-game chess UI; interactive board (solid white/black Unicode pieces), optimistic moves, turn timer, lobby waiting state with invite code, promotion dialog, resign, captured pieces panel, move history panel, AI polling.
+- `src/components/TurnTimer.tsx` — shared turn timer countdown component used by both SRX and Chess.
 - `src/app/api/game/chess/moves/route.ts` — `GET /api/game/chess/moves?id=<playerId>` returns legal moves for the current position.
 - `scripts/simulate.ts` — CLI runner for the simulation engine. **`--reset` wipes ALL game data** (sessions, players, scores) — not just simulation artifacts. `--repeat N` only cleans simulation-specific players (`Sim_*`) between runs.
 
@@ -499,7 +500,7 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - `SessionLock` — per-session advisory lock support row. One row per active session; used by `withCommitLock` (`INSERT IGNORE` + `SELECT … FOR UPDATE NOWAIT`). Deleted by `deleteGameSession`.
 - `AdminSettings` singleton (`id = "admin"`) stores bcrypt admin password when set from `/admin`; if absent, `INITIAL_ADMIN_PASSWORD` env is used
 - `SystemSettings` singleton (`id = "default"`) stores optional `geminiApiKey`, `geminiModel`, and door-game AI fields (`doorAiDecideBatchSize`, `geminiMaxConcurrent`, `doorAiMaxConcurrentMcts`, `doorAiMoveTimeoutMs`, `mctsBudgetMs` nullable, `compactAiPrompt` boolean); `DATABASE_URL` stays in the environment only. `mctsBudgetMs` controls MCTS search budget for optimal persona (null → uses `MCTS_BUDGET_MS` env or 45000ms default); `compactAiPrompt` enables short Gemini prompts for testing.
-- `GameSession` tracks game sessions with **`gameType`** (default `"srx"`; API field name is `game`), `galaxyName` (unique), `createdBy`, `isPublic`, `inviteCode` (unique, auto-generated 8-char hex), `maxPlayers` (default **50**, max **128**), `currentTurnPlayerId` (whose turn it is, by player ID; null in admin lobby until first human), `turnStartedAt` (**nullable** — null in lobby, no timer), **`waitingForHuman`** (pre-staged admin galaxies until first human joins), `turnTimeoutSecs` (default 86400), **`turnMode`**, **`dayNumber`**, **`actionsPerDay`**, **`roundStartedAt`** (door-game round timer anchor), **`log`** (Json?, stores game state for non-DB-model games like chess), **`status`** (`"active"` | `"complete"`), player list, and outcome. Players are linked via `Player.gameSessionId` and ordered by `Player.turnOrder`.
+- `GameSession` tracks game sessions with **`gameType`** (default `"srx"`; API field name is `game`), `galaxyName` (unique), `createdBy`, `isPublic`, `inviteCode` (unique, auto-generated 8-char hex), `maxPlayers` (default **50**, max **128**), `currentTurnPlayerId` (whose turn it is, by player ID; null in admin lobby until first human), `turnStartedAt` (**nullable** — null in lobby, no timer), **`waitingForHuman`** (pre-staged admin galaxies until first human joins; also used for chess human-vs-human games waiting for opponent), `turnTimeoutSecs` (default: game-specific via `GameHttpAdapter.defaultTurnTimeoutSecs` — SRX 86400/24h, chess 43200/12h; fallback 86400), **`turnMode`**, **`dayNumber`**, **`actionsPerDay`**, **`roundStartedAt`** (door-game round timer anchor), **`log`** (Json?, stores game state for non-DB-model games like chess), **`status`** (`"active"` | `"complete"`), player list, and outcome. Players are linked via `Player.gameSessionId` and ordered by `Player.turnOrder`.
 
 ### Action types (all handled in game-engine.ts)
 - Economy: `buy_planet`, `set_tax_rate`, `set_sell_rates`, `set_supply_rates`

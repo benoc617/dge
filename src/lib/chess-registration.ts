@@ -13,10 +13,10 @@ import type { GameMetadata } from "@dge/shared";
 const chessMetadata: GameMetadata = {
   game: "chess",
   displayName: "Chess",
-  description: "Classic chess against an MCTS AI opponent.",
+  description: "Classic chess — AI or human opponent, 12h turn timer.",
   playerRange: [2, 2],
-  supportsJoin: false,
-  autoCreateAI: true,
+  supportsJoin: true,
+  autoCreateAI: false,
   createOptions: [],
 };
 
@@ -28,8 +28,7 @@ registerGame("chess", {
     turnOrder: {
       async runTick() {}, // Chess has no tick
       async processEndTurn(playerId: string) {
-        // Chess doesn't use end_turn — moves are the only action
-        // This is called by auto-skip on timeout; treat as a loss
+        // Called by engine auto-skip on timeout — chess loses on time.
         const { getDb } = await import("@dge/engine/db-context");
         const player = await getDb().player.findUnique({
           where: { id: playerId },
@@ -43,15 +42,17 @@ registerGame("chess", {
         });
         if (!session?.log) return;
 
-        const { resign } = await import("@dge/chess");
         const state = session.log as unknown as import("@dge/chess").ChessState;
         if (state.status !== "playing") return;
 
-        const resigned = resign(state);
+        const timedOutColor = state.whitePlayerId === playerId ? "white" : "black";
+        const winner = timedOutColor === "white" ? "black" : "white";
+        const updated = { ...state, status: "timeout" as const, winner };
+
         await getDb().gameSession.update({
           where: { id: player.gameSessionId },
           data: {
-            log: JSON.parse(JSON.stringify(resigned)),
+            log: JSON.parse(JSON.stringify(updated)),
             status: "complete",
           },
         });

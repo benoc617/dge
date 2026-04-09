@@ -11,6 +11,7 @@ import {
   uniqueGalaxy,
   api,
   postGameOver,
+  postGameOverById,
   runAI,
   getLobbies,
   getSession,
@@ -43,7 +44,7 @@ describe("E2E: auxiliary API routes", () => {
     expect(Array.isArray((data as { scores: unknown[] }).scores)).toBe(true);
   });
 
-  it("POST /api/game/gameover returns standings and marks game over", async () => {
+  it("POST /api/game/gameover returns standings by playerName", async () => {
     const name = uniqueName("GOE2E");
     const { status: regStatus, data: reg } = await register(name, TEST_PASSWORD, { galaxyName: uniqueGalaxy("GOGal") });
     expect(regStatus).toBe(201);
@@ -54,6 +55,20 @@ describe("E2E: auxiliary API routes", () => {
     expect(d.gameOver).toBe(true);
     expect(Array.isArray(d.standings)).toBe(true);
     expect(d.winner).toBeTruthy();
+  });
+
+  it("POST /api/game/gameover returns standings by playerId (avoids name collision)", async () => {
+    const name = uniqueName("GOById");
+    const { status: regStatus, data: reg } = await register(name, TEST_PASSWORD, { galaxyName: uniqueGalaxy("GOByIdGal") });
+    expect(regStatus).toBe(201);
+    const regData = reg as { id?: string; gameSessionId?: string };
+    scheduleTestGalaxyDeletion(regData.gameSessionId);
+    expect(regData.id).toBeTruthy();
+    const { status, data } = await postGameOverById(regData.id!, name);
+    expect(status).toBe(200);
+    const d = data as { gameOver: boolean; standings: unknown[]; winner: string };
+    expect(d.gameOver).toBe(true);
+    expect(Array.isArray(d.standings)).toBe(true);
   });
 
   it("POST /api/ai/setup requires gameSessionId", async () => {

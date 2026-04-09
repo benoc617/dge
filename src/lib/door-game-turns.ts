@@ -165,6 +165,7 @@ function makeSrxHooks(options?: { scheduleAiDrain?: boolean }): DoorGameHooks {
         select: { turnsLeft: true, fullTurnsUsedThisRound: true },
       });
       if (!emp) return { remainingTurns: 0 };
+      const actualForfeited = Math.min(slotsLeft, emp.turnsLeft);
       const newTurnsLeft = Math.max(0, emp.turnsLeft - slotsLeft);
       await getDb().empire.update({
         where: { playerId },
@@ -173,6 +174,7 @@ function makeSrxHooks(options?: { scheduleAiDrain?: boolean }): DoorGameHooks {
           turnOpen: false,
           tickProcessed: false,
           turnsLeft: newTurnsLeft,
+          turnsPlayed: { increment: actualForfeited },
         },
       });
       return { remainingTurns: newTurnsLeft };

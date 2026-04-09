@@ -3,34 +3,38 @@ export const CHESS_HELP_TITLE = "Chess";
 export const CHESS_HELP_CONTENT = `
 # Chess
 
-Standard chess against an AI opponent powered by Monte Carlo Tree Search (MCTS).
+Standard chess against an AI (MCTS) or a human opponent.
 
 ## How to Play
 
 - **Click a piece** to select it. Legal destination squares will highlight.
 - **Click a highlighted square** to complete the move.
-- Once you click a piece, you must move it (click another of your pieces to switch).
-- **Pawn promotion**: when a pawn reaches the back rank, you'll be prompted to choose a piece.
+- Click another of your pieces to switch selection.
+- **Pawn promotion**: when a pawn reaches the back rank, choose a piece (Q/R/B/N).
+
+## Opponent Modes
+
+- **AI (MCTS)**: game starts immediately; AI uses Monte Carlo Tree Search (~3s per move).
+- **Human (invite)**: share the invite code and wait for an opponent to join.
+
+## Turn Timer
+
+Each player has a configurable time limit per move (default **12 hours**). If you don't move in time, you **lose on time** — the opponent wins. The timer countdown is shown in the header bar.
 
 ## Rules
 
 Standard FIDE chess rules apply:
-- Castling (kingside and queenside) when neither king nor rook has moved and no squares are attacked.
-- En passant capture.
-- Fifty-move draw rule (100 half-moves without a pawn move or capture).
+- Castling, en passant, pawn promotion.
+- Fifty-move draw rule.
 - Threefold repetition draw.
 - Insufficient material draw (K vs K, K+B vs K, K+N vs K, same-color bishops).
 
 ## Controls
 
 - **Resign**: Click the Resign button to concede the game.
-- The board shows captured pieces for both sides.
+- Captured pieces are shown in the left panel.
+- Move history is in the right panel.
 - Check and checkmate are automatically detected.
-
-## AI Opponent
-
-The AI uses MCTS (Monte Carlo Tree Search) with a 3-second time budget per move.
-It does not use any external API — all computation is local.
 `;
 
 export const HELP_REGISTRY: Record<string, { title: string; content: string }> = {

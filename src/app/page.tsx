@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { SESSION } from "@/lib/game-constants";
 import { apiFetch } from "@/lib/client-fetch";
@@ -95,9 +95,29 @@ const CLIENT_GAME_REGISTRY: ClientGameMetadata[] = [
   {
     game: "chess",
     displayName: "Chess",
-    description: "Classic chess against an MCTS AI opponent. No Gemini — pure local computation.",
-    supportsJoin: false,
-    createOptions: [],
+    description: "Classic chess with MCTS AI or a human opponent. Per-turn timer with enforced timeout.",
+    supportsJoin: true,
+    createOptions: [
+      {
+        key: "opponentMode",
+        label: "Opponent",
+        description: "Play against the MCTS AI or invite a human player",
+        type: "select",
+        default: "ai",
+        options: [
+          { value: "ai", label: "AI (MCTS)" },
+          { value: "human", label: "Human (invite)" },
+        ],
+      },
+      {
+        key: "turnTimeoutSecs",
+        label: "Turn Timer",
+        description: "Time limit per move before auto-forfeit",
+        type: "select",
+        default: String(43200),
+        options: TURN_TIMER_OPTIONS.map((o) => ({ value: String(o.secs), label: o.label })),
+      },
+    ],
   },
 ];
 
@@ -181,6 +201,17 @@ export default function Home() {
   const [isCreator, setIsCreator] = useState(false);
   const [initialEvents, setInitialEvents] = useState<string[]>([]);
   const createdPlayerIdRef = useRef<string | null>(null);
+
+  // ── Browser title ──
+  useEffect(() => {
+    if (playerName) {
+      const gameMeta = CLIENT_GAME_REGISTRY.find((g) => g.game === activeGame);
+      const label = gameMeta?.displayName ?? activeGame.toUpperCase();
+      document.title = initialGalaxyName ? `${label} — ${initialGalaxyName}` : label;
+    } else {
+      document.title = "Door Game Engine";
+    }
+  }, [playerName, activeGame, initialGalaxyName]);
 
   // ── Lobby state ──
   const [authUser, setAuthUser] = useState<{ username: string; fullName: string; email: string } | null>(null);

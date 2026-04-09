@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { apiFetch } from "@/lib/client-fetch";
+import { TurnTimer } from "@/components/TurnTimer";
 
 // ---------------------------------------------------------------------------
 // Types (mirror what buildStatus returns)
@@ -15,6 +16,8 @@ interface ChessStatus {
   name: string;
   sessionId: string;
   galaxyName: string | null;
+  inviteCode: string | null;
+  waitingForGameStart: boolean;
   gameStatus: string;
   winner: string | null;
   myColor: string;
@@ -28,6 +31,8 @@ interface ChessStatus {
   capturedByBlack: string[];
   fullMoveNumber: number;
   halfMoveClock: number;
+  turnDeadline: string | null;
+  turnTimeoutSecs: number;
   turnOrder: { name: string; isAI: boolean; isCurrent: boolean }[];
   game?: string;
 }
@@ -36,9 +41,9 @@ interface ChessStatus {
 // Piece rendering (Unicode chess symbols)
 // ---------------------------------------------------------------------------
 
-const PIECE_CHARS: Record<string, Record<string, string>> = {
-  white: { K: "\u2654", Q: "\u2655", R: "\u2656", B: "\u2657", N: "\u2658", P: "\u2659" },
-  black: { K: "\u265A", Q: "\u265B", R: "\u265C", B: "\u265D", N: "\u265E", P: "\u265F" },
+// All pieces use the filled glyphs (U+265A–265F) so white pieces render as solid, not outlines.
+const PIECE_CHARS: Record<string, string> = {
+  K: "\u265A", Q: "\u265B", R: "\u265C", B: "\u265D", N: "\u265E", P: "\u265F",
 };
 
 const PIECE_NAMES: Record<string, string> = { K: "King", Q: "Queen", R: "Rook", B: "Bishop", N: "Knight", P: "Pawn" };
@@ -114,9 +119,12 @@ export function ChessGameScreen({
   useEffect(() => {
     if (pollRef.current) clearInterval(pollRef.current);
     if (!status) return;
-    if (status.gameStatus !== "playing") return;
-    if (!status.isYourTurn) {
-      pollRef.current = setInterval(fetchStatus, 1500);
+    // Poll while waiting for opponent to join, or waiting for AI/opponent to move.
+    const shouldPoll =
+      status.waitingForGameStart ||
+      (status.gameStatus === "playing" && !status.isYourTurn);
+    if (shouldPoll) {
+      pollRef.current = setInterval(fetchStatus, status.waitingForGameStart ? 3000 : 1500);
     }
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [status, fetchStatus]);
@@ -163,7 +171,15 @@ export function ChessGameScreen({
     const movingPiece = newBoard[from[0]][from[1]];
     if (!movingPiece) return;
 
+    const newCapturedByWhite = [...status.capturedByWhite];
+    const newCapturedByBlack = [...status.capturedByBlack];
+
     const captured = newBoard[to[0]][to[1]];
+    if (captured) {
+      if (status.turn === "white") newCapturedByWhite.push(captured.type);
+      else newCapturedByBlack.push(captured.type);
+    }
+
     newBoard[to[0]][to[1]] = promoChar
       ? { type: promoChar, color: movingPiece.color }
       : movingPiece;
@@ -171,6 +187,11 @@ export function ChessGameScreen({
 
     // En passant: pawn moves diagonally to empty square
     if (movingPiece.type === "P" && from[1] !== to[1] && !captured) {
+      const epPiece = newBoard[from[0]][to[1]];
+      if (epPiece) {
+        if (status.turn === "white") newCapturedByWhite.push(epPiece.type);
+        else newCapturedByBlack.push(epPiece.type);
+      }
       newBoard[from[0]][to[1]] = null;
     }
 
@@ -189,6 +210,8 @@ export function ChessGameScreen({
       isYourTurn: false,
       moveHistory: [...status.moveHistory, moveStr],
       turn: status.turn === "white" ? "black" : "white",
+      capturedByWhite: newCapturedByWhite,
+      capturedByBlack: newCapturedByBlack,
     });
   }, [status]);
 
@@ -310,6 +333,32 @@ export function ChessGameScreen({
     return <div className="flex items-center justify-center h-screen text-green-400 font-mono">Loading chess...</div>;
   }
 
+  // Waiting for human opponent — show lobby screen.
+  if (status.waitingForGameStart) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-black text-green-400 font-mono gap-6">
+        <h1 className="text-2xl font-bold tracking-wider text-yellow-400">
+          CHESS{status.galaxyName ? <span className="text-green-600 text-base font-normal ml-2">» {status.galaxyName}</span> : ""}
+        </h1>
+        <div className="border border-green-800 p-8 max-w-sm text-center space-y-4">
+          <div className="text-green-600 text-sm">Waiting for opponent to join…</div>
+          <div className="text-xs text-green-700">Share this invite code:</div>
+          <div
+            className="text-2xl font-bold text-yellow-400 tracking-widest cursor-pointer hover:text-yellow-300"
+            title="Click to copy"
+            onClick={() => { navigator.clipboard?.writeText(status.inviteCode ?? ""); }}
+          >
+            {status.inviteCode}
+          </div>
+          <div className="text-[10px] text-green-800">Click code to copy</div>
+        </div>
+        <button onClick={onLogout} className="text-red-900 hover:text-red-500 text-xs mt-4">
+          LEAVE
+        </button>
+      </div>
+    );
+  }
+
   const isFlipped = status.myColor === "black";
   const gameOver = status.gameStatus !== "playing";
 
@@ -317,13 +366,16 @@ export function ChessGameScreen({
     <div className="flex flex-col min-h-screen bg-black text-green-400 font-mono">
       {/* Header bar */}
       <div className="flex items-center justify-between px-4 py-2 border-b border-green-900">
-        <h1 className="text-lg font-bold tracking-wider text-yellow-400">CHESS</h1>
+        <h1 className="text-lg font-bold tracking-wider text-yellow-400">
+          CHESS{status.galaxyName ? <span className="text-green-600 text-xs font-normal ml-2">» {status.galaxyName}</span> : ""}
+        </h1>
         <div className="flex gap-3 items-center text-sm">
           {gameOver ? (
             <span className="text-yellow-400 font-bold">
               {status.gameStatus === "checkmate" && (status.winner === status.myColor ? "YOU WIN" : "YOU LOSE")}
               {status.gameStatus === "stalemate" && "DRAW"}
               {status.gameStatus === "resigned" && (status.winner === status.myColor ? "OPPONENT RESIGNED" : "YOU RESIGNED")}
+              {status.gameStatus === "timeout" && (status.winner === status.myColor ? "OPPONENT TIMED OUT" : "TIME EXPIRED")}
               {status.gameStatus.startsWith("draw_") && status.gameStatus !== "stalemate" && "DRAW"}
             </span>
           ) : status.isYourTurn ? (
@@ -332,6 +384,9 @@ export function ChessGameScreen({
             <span className="text-yellow-400">THINKING…</span>
           )}
           {!gameOver && status.inCheck && <span className="text-red-500 font-bold">CHECK</span>}
+          {!gameOver && status.turnDeadline && (
+            <TurnTimer deadline={status.turnDeadline} isYourTurn={status.isYourTurn} />
+          )}
           <span className="text-gray-600">Move {status.fullMoveNumber}</span>
           <span className="text-gray-600">·</span>
           <span className="text-green-600">{playerName}</span>
@@ -342,20 +397,47 @@ export function ChessGameScreen({
         </div>
       </div>
 
-      {/* Main layout: board center, move list right */}
+      {/* Main layout: left panel (captures + controls), center board, right panel (moves) */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Board column */}
-        <div className="flex-1 flex flex-col items-center justify-center p-4 gap-3">
-          {/* Opponent captured pieces (above board) */}
-          <CapturedPieces
-            pieces={isFlipped ? status.capturedByWhite : status.capturedByBlack}
-            color={isFlipped ? "black" : "white"}
-            side="opponent"
+        {/* Left panel — captured pieces + controls */}
+        <div className="w-48 border-r border-green-900 flex flex-col bg-black">
+          <CapturedPanel
+            label={isFlipped ? "YOUR CAPTURES" : "YOUR CAPTURES"}
+            pieces={isFlipped ? status.capturedByBlack : status.capturedByWhite}
+            capturedColor={isFlipped ? "white" : "black"}
           />
+          <CapturedPanel
+            label={isFlipped ? "OPP. CAPTURES" : "OPP. CAPTURES"}
+            pieces={isFlipped ? status.capturedByWhite : status.capturedByBlack}
+            capturedColor={isFlipped ? "black" : "white"}
+          />
+          <div className="flex-1" />
+          <div className="p-3 border-t border-green-900 flex flex-col gap-2">
+            {!gameOver && status.isYourTurn && (
+              <button
+                onClick={handleResign}
+                disabled={submitting}
+                className="w-full px-3 py-1.5 border border-red-900 text-red-500 hover:bg-red-900/30 disabled:opacity-50 text-xs font-bold tracking-wider"
+              >
+                RESIGN
+              </button>
+            )}
+            {gameOver && (
+              <button
+                onClick={onLogout}
+                className="w-full px-3 py-1.5 border border-green-700 text-green-400 hover:bg-green-900/30 text-xs font-bold tracking-wider"
+              >
+                BACK TO LOBBY
+              </button>
+            )}
+            {message && <div className="text-xs text-red-400 text-center">{message}</div>}
+          </div>
+        </div>
 
-          {/* Board */}
+        {/* Board column */}
+        <div className="flex-1 flex flex-col items-center justify-center p-4">
           <div className="relative">
-            <div className="grid grid-cols-8 border-2 border-green-800" style={{ width: "min(75vw, 520px)", height: "min(75vw, 520px)" }}>
+            <div className="grid grid-cols-8 border-2 border-green-800" style={{ width: "min(70vw, 520px)", height: "min(70vw, 520px)" }}>
               {Array.from({ length: 64 }).map((_, i) => {
                 const displayRow = Math.floor(i / 8);
                 const displayCol = i % 8;
@@ -395,7 +477,7 @@ export function ChessGameScreen({
                     {piece && (
                       <span className={`text-3xl sm:text-4xl select-none ${PIECE_COLOR_STYLE[piece.color] ?? ""}`}
                         style={{ lineHeight: 1 }}>
-                        {PIECE_CHARS[piece.color]?.[piece.type] ?? "?"}
+                        {PIECE_CHARS[piece.type] ?? "?"}
                       </span>
                     )}
                     {displayCol === 0 && (
@@ -424,48 +506,42 @@ export function ChessGameScreen({
                         className={`text-4xl p-2 hover:bg-green-900 rounded ${PIECE_COLOR_STYLE[status.myColor] ?? ""}`}
                         title={PIECE_NAMES[pt]}
                       >
-                        {PIECE_CHARS[status.myColor]?.[pt]}
+                        {PIECE_CHARS[pt]}
                       </button>
                     ))}
                   </div>
                 </div>
               </div>
             )}
-          </div>
 
-          {/* Own captured pieces (below board) */}
-          <CapturedPieces
-            pieces={isFlipped ? status.capturedByBlack : status.capturedByWhite}
-            color={isFlipped ? "white" : "black"}
-            side="own"
-          />
-
-          {/* Controls */}
-          <div className="flex gap-3 items-center">
-            {!gameOver && status.isYourTurn && (
-              <button
-                onClick={handleResign}
-                disabled={submitting}
-                className="px-4 py-1.5 border border-red-900 text-red-500 hover:bg-red-900/30 disabled:opacity-50 text-xs font-bold tracking-wider"
-              >
-                RESIGN
-              </button>
-            )}
+            {/* Game over overlay */}
             {gameOver && (
-              <button
-                onClick={onLogout}
-                className="px-4 py-1.5 border border-green-700 text-green-400 hover:bg-green-900/30 text-xs font-bold tracking-wider"
-              >
-                BACK TO LOBBY
-              </button>
+              <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-10">
+                <div className="bg-gray-900 border border-yellow-600 rounded p-6 text-center space-y-3 max-w-xs">
+                  <div className="text-yellow-400 font-bold text-lg tracking-wider">GAME OVER</div>
+                  <div className="text-green-400 text-sm">
+                    {status.gameStatus === "checkmate" && (status.winner === status.myColor ? "Checkmate — you win!" : "Checkmate — you lose.")}
+                    {status.gameStatus === "stalemate" && "Draw by stalemate."}
+                    {status.gameStatus === "resigned" && (status.winner === status.myColor ? "Your opponent resigned." : "You resigned.")}
+                    {status.gameStatus === "timeout" && (status.winner === status.myColor ? "Opponent ran out of time." : "You ran out of time.")}
+                    {status.gameStatus === "draw_50move" && "Draw by 50-move rule."}
+                    {status.gameStatus === "draw_repetition" && "Draw by threefold repetition."}
+                    {status.gameStatus === "draw_insufficient" && "Draw by insufficient material."}
+                  </div>
+                  <button
+                    onClick={onLogout}
+                    className="px-4 py-2 border border-green-600 text-green-400 hover:bg-green-900/50 text-xs font-bold tracking-wider"
+                  >
+                    BACK TO LOBBY
+                  </button>
+                </div>
+              </div>
             )}
           </div>
-
-          {message && <div className="text-xs text-red-400 max-w-md text-center">{message}</div>}
         </div>
 
         {/* Move list panel (right side) */}
-        <div className="w-56 border-l border-green-900 flex flex-col bg-black">
+        <div className="w-48 border-l border-green-900 flex flex-col bg-black">
           <div className="px-3 py-2 border-b border-green-900 text-xs text-green-600 font-bold tracking-wider">
             MOVES
           </div>
@@ -503,19 +579,25 @@ export function ChessGameScreen({
 }
 
 // ---------------------------------------------------------------------------
-// Captured pieces sub-component
+// Captured pieces panel section
 // ---------------------------------------------------------------------------
 
-function CapturedPieces({ pieces, color, side }: { pieces: string[]; color: string; side: "opponent" | "own" }) {
-  const captured = color === "white" ? "black" : "white";
+const PIECE_VALUE_ORDER: Record<string, number> = { Q: 0, R: 1, B: 2, N: 3, P: 4 };
+
+function CapturedPanel({ label, pieces, capturedColor }: { label: string; pieces: string[]; capturedColor: string }) {
+  const sorted = [...pieces].sort((a, b) => (PIECE_VALUE_ORDER[a] ?? 9) - (PIECE_VALUE_ORDER[b] ?? 9));
   return (
-    <div className="h-7 flex items-center gap-0.5">
-      {pieces.length > 0 && pieces.map((pt, i) => (
-        <span key={i} className={`text-lg ${PIECE_COLOR_STYLE[captured] ?? ""} opacity-60`}>
-          {PIECE_CHARS[captured]?.[pt] ?? "?"}
-        </span>
-      ))}
-      {pieces.length === 0 && <span className="text-gray-800 text-[10px]">{side === "opponent" ? "opponent captures" : "your captures"}</span>}
+    <div className="px-3 py-2 border-b border-green-900">
+      <div className="text-[10px] text-green-700 font-bold tracking-wider mb-1">{label}</div>
+      <div className="flex flex-wrap gap-0.5 min-h-[1.5rem]">
+        {sorted.length > 0 ? sorted.map((pt, i) => (
+          <span key={i} className={`text-xl ${PIECE_COLOR_STYLE[capturedColor] ?? ""} opacity-70`} title={PIECE_NAMES[pt]}>
+            {PIECE_CHARS[pt] ?? "?"}
+          </span>
+        )) : (
+          <span className="text-gray-800 text-[10px] italic">none</span>
+        )}
+      </div>
     </div>
   );
 }
