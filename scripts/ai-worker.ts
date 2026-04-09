@@ -37,7 +37,7 @@ import { resolveDoorAiRuntimeSettings } from "../src/lib/door-ai-runtime-setting
 const WORKER_ID = crypto.randomUUID();
 const POLL_INTERVAL_MS = parseInt(process.env.AI_WORKER_POLL_MS ?? "500", 10);
 const STALE_RECOVERY_INTERVAL_MS = 30_000;
-const STALE_THRESHOLD_MS = 5 * 60 * 1000;
+const STALE_THRESHOLD_MS = 60 * 1000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
