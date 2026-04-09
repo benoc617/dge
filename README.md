@@ -98,9 +98,12 @@ src/
 ### Key contracts
 
 - Games implement `GameDefinition<TState>` from `@dge/shared` — the engine never imports game code
-- Games register via `registerGame("type", definition, hooks)` — routes dispatch by session `gameType`
-- Games provide `GameUIConfig<TState>` to `@dge/shell` — the shell renders without knowing game internals
-- Hook injection (`TurnOrderHooks` / `DoorGameHooks`) lets the engine call game-specific persistence and AI
+- Games register via `registerGame("type", { definition, metadata, adapter, hooks })` — routes dispatch by session `game` key
+- `GameMetadata` drives the generic lobby UI (game-select cards, create-game form) without per-game React code in the lobby
+- `GameHttpAdapter` lets API routes stay game-agnostic — each method delegates status, leaderboard, game-over, and player-init logic to the game
+- `GameScreen` components (`src/components/<Name>GameScreen.tsx`) fully own the in-game UI; `page.tsx` dispatches to the correct one via `GAME_SCREEN_REGISTRY`
+- Hook injection (`TurnOrderHooks` / `DoorGameHooks`) lets the engine call game-specific persistence and AI without importing game code
+- The **bootstrap module** (`src/lib/game-bootstrap.ts`) consolidates all game registration imports so individual API routes need only one `import "@/lib/game-bootstrap"` line
 
 ### Turn modes
 
@@ -113,9 +116,10 @@ src/
 1. Create `games/{name}/src/definition.ts` implementing `GameDefinition<{Name}State>`
 2. Create `games/{name}/src/help-content.ts` with a `HELP_REGISTRY` entry
 3. Add `games/{name}/package.json` as `@dge/{name}` and `games/{name}/docs/GAME-SPEC.md`
-4. Create `src/lib/{name}-registration.ts` calling `registerGame("{name}", definition, hooks)` and import it in the relevant API routes
-5. Create a `GameUIConfig<{Name}State>` and pass it to `<GameLayout>` in the UI
-6. Add unit tests in `tests/unit/{name}-*.test.ts` and E2E tests in `tests/e2e/{name}-*.test.ts`
+4. Implement `GameMetadata` (lobby card + create-form options) and `GameHttpAdapter` (API payload hooks)
+5. Create `src/lib/{name}-registration.ts` calling `registerGame("{name}", { definition, metadata, adapter, hooks })` and add it to `src/lib/game-bootstrap.ts`
+6. Create `src/components/{Name}GameScreen.tsx` for the in-game UI; register it in `GAME_SCREEN_REGISTRY` and `CLIENT_GAME_REGISTRY` in `src/app/page.tsx`
+7. Add unit tests in `tests/unit/{name}-*.test.ts` and E2E tests in `tests/e2e/{name}-*.test.ts`
 
 ## Tech Stack
 

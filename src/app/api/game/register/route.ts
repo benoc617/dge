@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { ACTIONS_PER_DAY, START } from "@/lib/game-constants";
+import { SESSION } from "@/lib/game-constants";
 import { randomBytes } from "crypto";
-import { clampMaxPlayers } from "@/lib/auth";
 import { resolvePlayerCredentials } from "@/lib/player-auth";
-import { createStarterPlanets, createStarterEmpire } from "@/lib/player-init";
+import { requireGame } from "@dge/engine/registry";
+import "@/lib/game-bootstrap"; // ensure all games are registered
 
 function generateInviteCode(): string {
   return randomBytes(4).toString("hex").toUpperCase();
+}
+
+function clampMaxPlayers(n: unknown, max: number = SESSION.MAX_PLAYERS_CAP): number {
+  const v = typeof n === "number" ? n : parseInt(String(n), 10);
+  if (!Number.isFinite(v)) return 50;
+  return Math.max(SESSION.MIN_PLAYERS, Math.min(max, v));
 }
 
 async function handleRegisterPost(req: NextRequest): Promise<Response> {
@@ -21,19 +27,22 @@ async function handleRegisterPost(req: NextRequest): Promise<Response> {
   const {
     name,
     password,
+    game: gameKey,
     galaxyName,
     isPublic,
     turnTimeoutSecs,
     maxPlayers,
-    turnMode,
+    // game-specific options collected from the create form
+    ...gameOptions
   } = body as {
     name?: string;
     password?: string;
+    game?: string;
     galaxyName?: string | null;
     isPublic?: boolean;
     turnTimeoutSecs?: number;
     maxPlayers?: number;
-    turnMode?: string;
+    [key: string]: unknown;
   };
 
   if (!name || typeof name !== "string") {
@@ -43,18 +52,28 @@ async function handleRegisterPost(req: NextRequest): Promise<Response> {
     return NextResponse.json({ error: "Password is required" }, { status: 400 });
   }
 
+  // Resolve game — defaults to "srx" for backwards compatibility.
+  const resolvedGame = (typeof gameKey === "string" && gameKey) ? gameKey : "srx";
+  let gameReg: ReturnType<typeof requireGame>;
+  try {
+    gameReg = requireGame(resolvedGame);
+  } catch {
+    return NextResponse.json({ error: `Unknown game: ${resolvedGame}` }, { status: 400 });
+  }
+  const { adapter, metadata } = gameReg;
+
   const cred = await resolvePlayerCredentials(name, password);
   if ("error" in cred) {
     return NextResponse.json({ error: cred.error }, { status: cred.status });
   }
 
-  if (galaxyName && galaxyName.trim().length < 2) {
+  if (galaxyName && typeof galaxyName === "string" && galaxyName.trim().length < 2) {
     return NextResponse.json({ error: "Galaxy name must be at least 2 characters" }, { status: 400 });
   }
 
   if (galaxyName) {
     const existingGalaxy = await prisma.gameSession.findUnique({
-      where: { galaxyName: galaxyName.trim() },
+      where: { galaxyName: (galaxyName as string).trim() },
     });
     if (existingGalaxy) {
       return NextResponse.json({ error: "Galaxy name already taken" }, { status: 409 });
@@ -63,56 +82,61 @@ async function handleRegisterPost(req: NextRequest): Promise<Response> {
 
   const inviteCode = generateInviteCode();
   const timeout = typeof turnTimeoutSecs === "number" && turnTimeoutSecs > 0 ? turnTimeoutSecs : 86400;
-  const cap = clampMaxPlayers(maxPlayers);
+
+  // turnMode comes from gameOptions (passed via the create form).
+  const turnModeOption = typeof gameOptions.turnMode === "string" ? gameOptions.turnMode : "sequential";
+  const simultaneous = turnModeOption === "simultaneous";
+
+  // maxPlayers clamped to the game's declared player range.
+  const [, maxAllowed] = metadata.playerRange;
+  const cap = clampMaxPlayers(maxPlayers, maxAllowed);
 
   const now = new Date();
-  const simultaneous = turnMode === "simultaneous";
+
   const session = await prisma.gameSession.create({
     data: {
-      galaxyName: galaxyName?.trim() || null,
+      gameType: resolvedGame,
+      galaxyName: typeof galaxyName === "string" ? galaxyName.trim() || null : null,
       createdBy: cred.playerName,
       isPublic: isPublic !== false,
       inviteCode,
       maxPlayers: cap,
       playerNames: [cred.playerName],
-      totalTurns: START.TURNS,
+      totalTurns: adapter.defaultTotalTurns,
       turnTimeoutSecs: timeout,
       waitingForHuman: false,
       turnStartedAt: now,
       turnMode: simultaneous ? "simultaneous" : "sequential",
-      actionsPerDay: ACTIONS_PER_DAY,
+      actionsPerDay: adapter.defaultActionsPerDay,
       dayNumber: 1,
       roundStartedAt: simultaneous ? now : null,
     },
   });
 
+  // Game-specific: player state creation (delegated to adapter).
   const player = await prisma.player.create({
     data: {
       name: cred.playerName,
       passwordHash: cred.passwordHash,
       userId: cred.userId,
       gameSessionId: session.id,
-      empire: { create: createStarterEmpire(createStarterPlanets()) },
+      ...(adapter.getPlayerCreateData() as object),
     },
     include: {
       empire: { include: { planets: true, army: true, supplyRates: true } },
     },
   });
 
-  await prisma.gameSession.update({
-    where: { id: session.id },
-    data: simultaneous ? { currentTurnPlayerId: null } : { currentTurnPlayerId: player.id },
-  });
-
-  const marketCount = await prisma.market.count();
-  if (marketCount === 0) {
-    await prisma.market.create({ data: {} });
+  // Game-specific: post-creation setup (delegated to adapter).
+  if (adapter.onSessionCreated) {
+    await adapter.onSessionCreated(session.id, player.id, gameOptions as Record<string, unknown>);
   }
 
   try {
     return NextResponse.json(
       {
         ...player,
+        game: resolvedGame,
         gameSessionId: session.id,
         inviteCode: session.inviteCode,
         galaxyName: session.galaxyName,

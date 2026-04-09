@@ -1,11 +1,16 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  // Optional filter: ?game=srx  (maps to DB field gameType)
+  const gameFilter = searchParams.get("game") ?? null;
+
   const lobbies = await prisma.gameSession.findMany({
     where: {
       isPublic: true,
       status: "active",
+      ...(gameFilter ? { gameType: gameFilter } : {}),
     },
     select: {
       id: true,
@@ -15,6 +20,7 @@ export async function GET() {
       playerNames: true,
       startedAt: true,
       turnTimeoutSecs: true,
+      gameType: true,
     },
     orderBy: { startedAt: "desc" },
     take: 50,
@@ -28,6 +34,7 @@ export async function GET() {
     maxPlayers: l.maxPlayers,
     startedAt: l.startedAt,
     turnTimeoutSecs: l.turnTimeoutSecs,
+    game: l.gameType ?? "srx",
   }));
 
   return NextResponse.json(result);

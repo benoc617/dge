@@ -1,58 +1,143 @@
 /**
  * @dge/engine — Simultaneous ("door-game") turn management.
  *
- * Game-agnostic: uses the shared engine DB schema fields
- * (`Empire.turnOpen`, `Empire.fullTurnsUsedThisRound`, `GameSession.dayNumber`, etc.).
+ * Game-agnostic orchestration layer: manages round lifecycle (open turn,
+ * close turn, roll day, round timeout) without any game-specific DB schema
+ * knowledge. All per-player turn state reads/writes are delegated to
+ * DoorGameHooks, which games implement using their own data model.
  *
- * SRX-specific operations (tick, endgame settlement, cache invalidation, AI job
- * enqueueing) are injected via DoorGameHooks so this module has no dependency on
- * game-engine.ts, ai-job-queue.ts, or game-state-service.ts.
+ * SRX stores turn state in the Empire table; a future game could store it
+ * in the Player row, a separate PlayerTurnState table, or anywhere else —
+ * the engine does not care.
  */
 
 import { getDb } from "./db-context";
 
 // ---------------------------------------------------------------------------
-// Hooks (game-specific callbacks injected by the SRX layer)
+// Hooks (game-specific callbacks injected by the game layer)
 // ---------------------------------------------------------------------------
 
 /**
- * Callbacks for door-game lifecycle events that require game-specific logic.
+ * Callbacks for door-game lifecycle events.
+ *
+ * All state reads/writes for per-player turn tracking are here so the engine
+ * has zero knowledge of the game's data schema (no empire.turnsLeft, etc.).
  */
 export interface DoorGameHooks {
-  /**
-   * Run and persist the economy tick for the given player.
-   * `opts.decrementTurnsLeft` defaults to true; door-game passes false
-   * because turnsLeft is decremented by closeFullTurn instead.
-   */
-  runTick(
-    playerId: string,
-    opts?: { decrementTurnsLeft?: boolean },
-  ): Promise<unknown | null>;
+  // -------------------------------------------------------------------------
+  // Per-player turn slot state — reads
+  // -------------------------------------------------------------------------
 
   /**
-   * Run the endgame settlement tick when a player's turnsLeft hits 0.
-   * Called at the end of closeFullTurn and round-timeout forfeiture.
-   * `sessionId` is provided so the hook can trigger session-level cleanup
-   * (e.g. log export) once all players in the session are done.
+   * True when the player can still act: they have remaining game turns AND
+   * haven't used all of their daily full-turn slots.
+   */
+  canPlayerAct(playerId: string, actionsPerDay: number): Promise<boolean>;
+
+  /**
+   * True when the player's current full-turn slot is open (they've started
+   * acting but haven't finished yet).
+   */
+  isTurnOpen(playerId: string): Promise<boolean>;
+
+  /**
+   * True when the economy/state tick has already run for this turn window
+   * (so re-opening the slot skips the tick).
+   */
+  isTickProcessed(playerId: string): Promise<boolean>;
+
+  /**
+   * True when the player has remaining game turns (not fully eliminated).
+   * Used in openFullTurn to guard against zero-turn-left players.
+   */
+  hasTurnsRemaining(playerId: string): Promise<boolean>;
+
+  // -------------------------------------------------------------------------
+  // Per-player turn slot state — writes
+  // -------------------------------------------------------------------------
+
+  /** Mark the player's turn slot as open (they are now in a turn window). */
+  openTurnSlot(playerId: string): Promise<void>;
+
+  /**
+   * Close the player's turn slot: mark it as used and update per-round counts.
+   * Returns how many game turns the player has remaining after this close.
+   */
+  closeTurnSlot(playerId: string): Promise<{ remainingTurns: number }>;
+
+  /**
+   * Forfeit `slotsLeft` remaining daily slots for the player (round timeout).
+   * Returns how many game turns the player has remaining after forfeiture.
+   */
+  forfeitSlots(
+    playerId: string,
+    slotsLeft: number,
+    sessionId: string,
+  ): Promise<{ remainingTurns: number }>;
+
+  /**
+   * Reset daily slot counters for all players in the session (new day begins).
+   */
+  resetDailySlots(sessionId: string): Promise<void>;
+
+  // -------------------------------------------------------------------------
+  // Round state — for tryRollRound
+  // -------------------------------------------------------------------------
+
+  /**
+   * Returns per-player slot usage for the current round, scoped to players
+   * who still have game turns remaining.
+   *
+   * `slotsUsed`        — how many daily full turns this player has completed.
+   * `hasRemainingTurns` — whether the player has game turns left.
+   */
+  getPlayerSlotUsage(
+    sessionId: string,
+  ): Promise<{ id: string; slotsUsed: number; hasRemainingTurns: boolean }[]>;
+
+  // -------------------------------------------------------------------------
+  // Game lifecycle callbacks
+  // -------------------------------------------------------------------------
+
+  /**
+   * Run the economy/state tick for an opening full-turn window.
+   * The hook is responsible for all game-specific tick behavior
+   * (e.g. SRX runs an economy pass without decrementing turnsLeft).
+   */
+  runTick(playerId: string): Promise<unknown>;
+
+  /**
+   * Run the final endgame tick when a player's game turns hit zero.
+   * Called after closeTurnSlot or forfeitSlots returns remainingTurns === 0.
    */
   runEndgameTick(playerId: string, sessionId: string): Promise<void>;
 
   /**
-   * Optional: fire-and-forget cache invalidation for a player's empire.
-   * Called after empire update in closeFullTurn.
+   * Persist a session-level event (e.g. round_timeout, day_complete).
+   * The engine calls this rather than writing to GameEvent directly.
    */
+  logSessionEvent(
+    sessionId: string,
+    payload: {
+      type: string;
+      message: string;
+      details: Record<string, unknown>;
+    },
+  ): Promise<void>;
+
+  // -------------------------------------------------------------------------
+  // Optional helpers
+  // -------------------------------------------------------------------------
+
+  /** Fire-and-forget cache invalidation for a player's state. */
   invalidatePlayer?(playerId: string): void;
 
-  /**
-   * Optional: fire-and-forget cache invalidation for the session leaderboard.
-   * Called after tryRollRound advances the calendar day.
-   */
+  /** Fire-and-forget cache invalidation for the session leaderboard. */
   invalidateLeaderboard?(sessionId: string): void;
 
   /**
-   * Optional: called after a new calendar day begins (day_complete event fired).
-   * Used by SRX to enqueue AI turn jobs in the ai-worker queue.
-   * Pass scheduleAiDrain:false from headless sims to disable.
+   * Called after a new calendar day begins (day_complete event fired).
+   * Use to enqueue AI jobs, evict caches, etc.
    */
   onDayComplete?(sessionId: string): void;
 }
@@ -60,16 +145,6 @@ export interface DoorGameHooks {
 // ---------------------------------------------------------------------------
 // Pure utilities (no hooks, no DB)
 // ---------------------------------------------------------------------------
-
-/**
- * True when the player has turns left and hasn't used all daily full-turn slots.
- */
-export function canPlayerAct(
-  empire: { turnsLeft: number; fullTurnsUsedThisRound: number },
-  actionsPerDay: number,
-): boolean {
-  return empire.turnsLeft > 0 && empire.fullTurnsUsedThisRound < actionsPerDay;
-}
 
 /**
  * True when `roundStartedAt + turnTimeoutSecs` has passed (door-game round deadline).
@@ -83,110 +158,59 @@ export function isSessionRoundTimedOut(
   return nowMs >= roundStartedAt.getTime() + turnTimeoutSecs * 1000;
 }
 
-/**
- * True when the skip-path bug left an empire with turnOpen set, the last logged
- * action was end_turn, and closeFullTurn never ran (tick still "unprocessed"
- * for the open slot).
- */
-export function isStuckDoorTurnAfterSkipEndLog(
-  turnOpen: boolean,
-  lastTurnLogAction: string | null | undefined,
-  tickProcessed: boolean | undefined,
-): boolean {
-  return turnOpen === true && lastTurnLogAction === "end_turn" && tickProcessed === false;
-}
-
 // ---------------------------------------------------------------------------
 // Core door-game lifecycle functions
 // ---------------------------------------------------------------------------
 
 /**
- * Run economy tick for a new full turn and mark the empire as mid-turn (`turnOpen`).
- * Returns the tick result (TurnReport in SRX) or null if not applicable.
+ * Run the economy tick for a new full turn and mark the player's slot as open.
+ * Returns the tick report (game-specific) or null if not applicable.
+ *
+ * Returns null when the player has no remaining game turns (already done).
+ * Returns null when the slot is already open (idempotent).
+ * Returns null when the tick was already processed (sets turnOpen only).
  */
 export async function openFullTurn(
   playerId: string,
   hooks: DoorGameHooks,
 ): Promise<unknown> {
-  const player = await getDb().player.findUnique({
-    where: { id: playerId },
-    include: { empire: true },
-  });
-  if (!player?.empire || player.empire.turnsLeft < 1) return null;
-  if (player.empire.turnOpen) {
+  if (!(await hooks.hasTurnsRemaining(playerId))) return null;
+  if (await hooks.isTurnOpen(playerId)) return null;
+
+  if (await hooks.isTickProcessed(playerId)) {
+    // Tick already ran for this turn window; just open the slot.
+    await hooks.openTurnSlot(playerId);
     return null;
   }
 
-  if (player.empire.tickProcessed) {
-    await getDb().empire.update({
-      where: { id: player.empire.id },
-      data: { turnOpen: true },
-    });
-    return null;
-  }
-
-  const report = await hooks.runTick(playerId, { decrementTurnsLeft: false });
-  if (!report) return null;
-
-  await getDb().empire.update({
-    where: { id: player.empire.id },
-    data: { turnOpen: true },
-  });
-
+  const report = await hooks.runTick(playerId);
+  await hooks.openTurnSlot(playerId);
   return report;
 }
 
 /**
- * After `end_turn` processAction: close the full turn, count it for the round,
- * decrement `turnsLeft` (one game turn per full turn / miniturn), maybe roll the
- * calendar day.
+ * After `end_turn` processAction: close the full turn, count it for the
+ * round, and maybe roll the calendar day.
  */
 export async function closeFullTurn(
   playerId: string,
   sessionId: string,
   hooks: DoorGameHooks,
 ): Promise<void> {
-  try {
-    const result = await getDb().empire.updateMany({
-      where: { playerId, turnsLeft: { gt: 0 } },
-      data: {
-        turnOpen: false,
-        tickProcessed: false,
-        fullTurnsUsedThisRound: { increment: 1 },
-        turnsLeft: { decrement: 1 },
-      },
-    });
-    if (result.count === 0) {
-      throw new Error(
-        `closeFullTurn: no empire updated for playerId=${playerId} (missing or turnsLeft<=0)`,
-      );
-    }
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(
-      `closeFullTurn: failed to update empire for playerId=${playerId}: ${msg}`,
-    );
-  }
-
-  const empAfter = await getDb().empire.findUnique({
-    where: { playerId },
-    select: { turnsLeft: true },
-  });
-  if (empAfter?.turnsLeft === 0) {
+  const { remainingTurns } = await hooks.closeTurnSlot(playerId);
+  if (remainingTurns === 0) {
     await hooks.runEndgameTick(playerId, sessionId);
   }
-
   hooks.invalidatePlayer?.(playerId);
   await tryRollRound(sessionId, hooks);
 }
 
 /**
- * When every active empire has used all full turns for the round (or the round
- * deadline passed), advance the calendar day.
+ * When every active player has used all full turns for the round (or the
+ * round deadline passed), advance the calendar day.
  *
- * `turnsLeft` is consumed per full turn in `closeFullTurn`, not here.
- * Round deadline: `roundStartedAt` + `turnTimeoutSecs` — remaining daily slots are
- * skipped (forfeit); each forfeited slot also consumes one `turnsLeft`.
+ * Game turns are consumed per full turn in `closeFullTurn`/`forfeitSlots`,
+ * not here.
  *
  * @returns true if a day roll occurred.
  */
@@ -196,11 +220,13 @@ export async function tryRollRound(
 ): Promise<boolean> {
   const session = await getDb().gameSession.findUnique({
     where: { id: sessionId },
-    include: {
-      players: {
-        where: { empire: { turnsLeft: { gt: 0 } } },
-        include: { empire: true },
-      },
+    select: {
+      turnMode: true,
+      waitingForHuman: true,
+      actionsPerDay: true,
+      dayNumber: true,
+      roundStartedAt: true,
+      turnTimeoutSecs: true,
     },
   });
 
@@ -210,106 +236,55 @@ export async function tryRollRound(
 
   const apd = session.actionsPerDay;
 
-  // Round deadline: forfeit remaining slots for empires that haven't finished.
+  // Round deadline: forfeit remaining slots for players that haven't finished.
   if (isSessionRoundTimedOut(session.roundStartedAt, session.turnTimeoutSecs)) {
-    const db = getDb();
-    const stuck = await db.empire.findMany({
-      where: {
-        player: { gameSessionId: sessionId },
-        turnsLeft: { gt: 0 },
-        fullTurnsUsedThisRound: { lt: apd },
-      },
-      select: {
-        id: true,
-        playerId: true,
-        fullTurnsUsedThisRound: true,
-        turnsLeft: true,
-      },
-    });
+    const usage = await hooks.getPlayerSlotUsage(sessionId);
     let forgivenCount = 0;
-    for (const emp of stuck) {
-      const used = emp.fullTurnsUsedThisRound ?? 0;
-      const slotsLeft = apd - used;
+
+    for (const p of usage) {
+      if (!p.hasRemainingTurns) continue;
+      const slotsLeft = apd - p.slotsUsed;
       if (slotsLeft <= 0) continue;
-      const newTurnsLeft = Math.max(0, emp.turnsLeft - slotsLeft);
-      await db.empire.update({
-        where: { id: emp.id },
-        data: {
-          fullTurnsUsedThisRound: apd,
-          turnOpen: false,
-          tickProcessed: false,
-          turnsLeft: newTurnsLeft,
-        },
-      });
-      if (newTurnsLeft === 0) {
-        await hooks.runEndgameTick(emp.playerId, sessionId);
+
+      const { remainingTurns } = await hooks.forfeitSlots(p.id, slotsLeft, sessionId);
+      if (remainingTurns === 0) {
+        await hooks.runEndgameTick(p.id, sessionId);
       }
       forgivenCount++;
     }
+
     if (forgivenCount > 0) {
-      await db.gameEvent.create({
-        data: {
-          gameSessionId: sessionId,
-          type: "round_timeout",
-          message: `Calendar day ${session.dayNumber}: round timer — remaining full turns skipped (${forgivenCount} empires).`,
-          details: { empireCount: forgivenCount, dayNumber: session.dayNumber } as object,
-        },
+      await hooks.logSessionEvent(sessionId, {
+        type: "round_timeout",
+        message: `Calendar day ${session.dayNumber}: round timer — remaining full turns skipped (${forgivenCount} players).`,
+        details: { playerCount: forgivenCount, dayNumber: session.dayNumber },
       });
     }
   }
 
-  // Re-fetch after potential timeout forfeiture
-  const session2 = await getDb().gameSession.findUnique({
-    where: { id: sessionId },
-    include: {
-      players: {
-        where: { empire: { turnsLeft: { gt: 0 } } },
-        include: { empire: true },
-      },
-    },
-  });
-  if (!session2) return false;
-
-  const active = session2.players.filter(
-    (p: (typeof session2.players)[number]) => p.empire,
-  );
+  // Re-fetch slot usage after potential forfeiture.
+  const usage2 = await hooks.getPlayerSlotUsage(sessionId);
+  const active = usage2.filter((p) => p.hasRemainingTurns);
   if (active.length === 0) return false;
 
-  const allDone = active.every(
-    (p: (typeof active)[number]) =>
-      (p.empire!.fullTurnsUsedThisRound ?? 0) >= session2.actionsPerDay,
-  );
+  const allDone = active.every((p) => p.slotsUsed >= apd);
+  if (!allDone) return false;
 
-  if (!allDone) {
-    return false;
-  }
+  // All active players done — advance the calendar day.
+  await hooks.resetDailySlots(sessionId);
 
-  // All players done — advance the calendar day.
-  const db = getDb();
-  await db.empire.updateMany({
-    where: { player: { gameSessionId: sessionId } },
-    data: {
-      fullTurnsUsedThisRound: 0,
-      tickProcessed: false,
-      turnOpen: false,
-    },
-  });
-
-  await db.gameSession.update({
+  await getDb().gameSession.update({
     where: { id: sessionId },
     data: {
-      dayNumber: session2.dayNumber + 1,
+      dayNumber: session.dayNumber + 1,
       roundStartedAt: new Date(),
     },
   });
 
-  await db.gameEvent.create({
-    data: {
-      gameSessionId: sessionId,
-      type: "day_complete",
-      message: `Calendar day ${session2.dayNumber} complete — day ${session2.dayNumber + 1} begins.`,
-      details: { previousDay: session2.dayNumber } as object,
-    },
+  await hooks.logSessionEvent(sessionId, {
+    type: "day_complete",
+    message: `Calendar day ${session.dayNumber} complete — day ${session.dayNumber + 1} begins.`,
+    details: { previousDay: session.dayNumber },
   });
 
   hooks.invalidateLeaderboard?.(sessionId);

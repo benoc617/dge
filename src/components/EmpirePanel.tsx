@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { GameState } from "@/app/page";
+import type { GameState } from "@/lib/srx-game-types";
 import { EMPIRE as EMPIRE_TT, EMPIRE_UNITS } from "@/lib/ui-tooltips";
 import { MIL } from "@/lib/game-constants";
 import Tooltip from "@/components/Tooltip";

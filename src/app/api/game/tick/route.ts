@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireGame } from "@dge/engine/registry";
-import { GalaxyBusyError } from "@/lib/db-context";
+import { SessionBusyError } from "@/lib/db-context";
 import { canPlayerAct } from "@/lib/door-game-turns";
 import { logSrxTiming, msElapsed } from "@/lib/srx-timing";
 import { invalidatePlayer } from "@/lib/game-state-service";
-import "@/lib/srx-registration"; // ensure SRX game is registered before any dispatch
+import "@/lib/game-bootstrap"; // ensure all games are registered before any dispatch
 
 export async function POST(req: NextRequest) {
   const tRoute = performance.now();
@@ -15,42 +15,55 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "playerName required" }, { status: 400 });
   }
 
+  // Find human player by name — no empire filter (chess players have no empire).
+  // SRX game-over check happens below after determining game type.
   const player = await prisma.player.findFirst({
-    where: { name: playerName, isAI: false, empire: { turnsLeft: { gt: 0 } } },
+    where: { name: playerName, isAI: false },
     orderBy: { createdAt: "desc" },
     include: { empire: true },
   });
-  if (!player || !player.empire) {
+  if (!player) {
     return NextResponse.json({ error: "Player not found" }, { status: 404 });
   }
 
   if (player.gameSessionId) {
+    // gameType is in schema but may not appear in generated select types; fetch full row and cast.
     const sess = await prisma.gameSession.findUnique({
       where: { id: player.gameSessionId },
-      select: { waitingForHuman: true, turnMode: true, actionsPerDay: true, gameType: true },
-    });
+    }) as { waitingForHuman: boolean; turnMode: string; actionsPerDay: number; status: string; gameType?: string | null } | null;
 
     if (sess?.waitingForHuman) {
       logSrxTiming("tick_denied", { playerName, reason: "waiting_for_human" });
-      return NextResponse.json({ error: "Galaxy has not started yet.", waitingForGameStart: true }, { status: 409 });
+      return NextResponse.json({ error: "Game session has not started yet.", waitingForGameStart: true }, { status: 409 });
     }
 
     const gameType = sess?.gameType ?? "srx";
+
+    // For SRX: game is over when turnsLeft hits 0 — return 410 Gone.
+    if (gameType === "srx" && player.empire && player.empire.turnsLeft <= 0) {
+      return NextResponse.json({ error: "Game over — no turns remaining." }, { status: 410 });
+    }
+    // For any game: session marked complete → 410 Gone.
+    if (sess?.status === "complete") {
+      return NextResponse.json({ error: "Game over — session is complete." }, { status: 410 });
+    }
+
     const game = requireGame(gameType);
 
     // -----------------------------------------------------------------------
-    // Door-game (simultaneous) tick path
+    // Door-game (simultaneous) tick path — SRX-specific for now
     // -----------------------------------------------------------------------
     if (sess?.turnMode === "simultaneous") {
-      // Pre-lock checks (cheap, no lock needed).
-      if (!canPlayerAct(player.empire, sess.actionsPerDay)) {
+      // Pre-lock checks using the SRX synchronous canPlayerAct helper.
+      // Only reached for SRX since chess uses sequential mode exclusively.
+      if (player.empire && !canPlayerAct(player.empire, sess.actionsPerDay)) {
         logSrxTiming("tick_denied", { playerName, reason: "no_full_turns_left_today" });
         return NextResponse.json(
           { error: "No full turns left today in this calendar round." },
           { status: 409 },
         );
       }
-      if (player.empire.turnOpen) {
+      if (player.empire?.turnOpen) {
         logSrxTiming("tick_denied", { playerName, reason: "already_open" });
         return NextResponse.json(
           { error: "Turn already open — take actions or end_turn.", alreadyOpen: true },
@@ -80,10 +93,10 @@ export async function POST(req: NextRequest) {
         }
         return NextResponse.json({ turnReport: report });
       } catch (err) {
-        if (err instanceof GalaxyBusyError) {
-          logSrxTiming("tick_galaxy_busy", { playerName, sessionId: player.gameSessionId });
+        if (err instanceof SessionBusyError) {
+          logSrxTiming("tick_session_busy", { playerName, sessionId: player.gameSessionId });
           return NextResponse.json(
-            { error: err.message, galaxyBusy: true },
+            { error: err.message, sessionBusy: true },
             { status: 409, headers: { "Retry-After": "0" } },
           );
         }
@@ -126,6 +139,9 @@ export async function POST(req: NextRequest) {
   // -------------------------------------------------------------------------
   // No-session tick path (legacy / solo play)
   // -------------------------------------------------------------------------
+  if (!player.empire || player.empire.turnsLeft <= 0) {
+    return NextResponse.json({ error: "Game over — no turns remaining." }, { status: 410 });
+  }
   const game = requireGame("srx");
   const report = await game.definition.processFullTick!(player.id);
   void invalidatePlayer(player.id).catch(() => {});

@@ -20,7 +20,7 @@
 
 import { useState } from "react";
 import type { GameUIConfig, GamePanelProps, LeaderboardPanelProps } from "@dge/shell";
-import type { GameState } from "@/app/page";
+import type { GameState } from "@/lib/srx-game-types";
 
 import EmpirePanel from "@/components/EmpirePanel";
 import ActionPanel from "@/components/ActionPanel";

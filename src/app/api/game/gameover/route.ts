@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { requireGame } from "@dge/engine/registry";
+import "@/lib/game-bootstrap"; // ensure all games are registered
 
 export async function POST(req: NextRequest) {
   const { playerName } = await req.json();
@@ -7,79 +9,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "playerName required" }, { status: 400 });
   }
 
-  // Find the player and their session
+  // Find the player and their session.
   const requestingPlayer = await prisma.player.findFirst({
     where: { name: playerName, isAI: false },
     orderBy: { createdAt: "desc" },
-    select: { gameSessionId: true },
+    select: {
+      gameSessionId: true,
+      gameSession: { select: { gameType: true } },
+    },
   });
 
   const sessionId = requestingPlayer?.gameSessionId;
+  const game = requestingPlayer?.gameSession?.gameType ?? "srx";
 
-  // Fetch players scoped to the same session (or all if no session)
-  const allPlayers = await prisma.player.findMany({
-    where: sessionId ? { gameSessionId: sessionId } : {},
-    include: { empire: { include: { planets: true, army: true } } },
-  });
-
-  const standings = allPlayers
-    .filter((p) => p.empire)
-    .map((p) => ({
-      name: p.name,
-      isAI: p.isAI,
-      netWorth: p.empire!.netWorth,
-      population: p.empire!.population,
-      planets: p.empire!.planets.length,
-      credits: p.empire!.credits,
-      turnsPlayed: p.empire!.turnsPlayed,
-      military: p.empire!.army
-        ? p.empire!.army.soldiers + p.empire!.army.fighters +
-          p.empire!.army.lightCruisers + p.empire!.army.heavyCruisers +
-          p.empire!.army.carriers + p.empire!.army.defenseStations
-        : 0,
-    }))
-    .sort((a, b) => b.netWorth - a.netWorth);
-
-  const highScoreEntries = standings.map((s, i) => ({
-    playerName: s.name,
-    netWorth: s.netWorth,
-    population: s.population,
-    planets: s.planets,
-    turnsPlayed: s.turnsPlayed,
-    rank: i + 1,
-    totalPlayers: standings.length,
-  }));
-
-  await prisma.highScore.createMany({ data: highScoreEntries });
-
-  // Mark the session as finished
-  if (sessionId) {
-    await prisma.gameSession.update({
-      where: { id: sessionId },
-      data: {
-        status: "finished",
-        winnerId: allPlayers.find((p) => p.name === standings[0]?.name)?.id,
-        winnerName: standings[0]?.name,
-        finalScores: standings,
-        finishedAt: new Date(),
-      },
-    });
+  if (!sessionId) {
+    return NextResponse.json({ error: "No active session found for player" }, { status: 404 });
   }
 
-  const winner = standings[0];
-  const playerRank = standings.findIndex((s) => s.name === playerName) + 1;
+  const { adapter } = requireGame(game);
 
-  const recentHighScores = await prisma.highScore.findMany({
-    orderBy: { netWorth: "desc" },
-    take: 10,
+  if (adapter.buildGameOver) {
+    const payload = await adapter.buildGameOver(sessionId, playerName);
+    return NextResponse.json(payload);
+  }
+
+  // Generic fallback: minimal game-over response with no SRX-specific fields.
+  await prisma.gameSession.update({
+    where: { id: sessionId },
+    data: { status: "finished", finishedAt: new Date() },
   });
 
-  return NextResponse.json({
-    gameOver: true,
-    standings,
-    winner: winner?.name ?? "Unknown",
-    playerRank,
-    playerScore: standings.find((s) => s.name === playerName),
-    highScores: recentHighScores,
-  });
+  return NextResponse.json({ gameOver: true, game, sessionId });
 }

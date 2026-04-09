@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { resolvePlayerCredentials } from "@/lib/player-auth";
-import { createStarterPlanets, createStarterEmpire } from "@/lib/player-init";
+import { requireGame } from "@dge/engine/registry";
+import "@/lib/game-bootstrap"; // ensure all games are registered
 
 export async function POST(req: NextRequest) {
   const { name, password, inviteCode, sessionId } = await req.json();
@@ -43,6 +44,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "This galaxy is no longer active" }, { status: 410 });
   }
 
+  // Check if the game supports joining.
+  const game = (session as { gameType?: string | null }).gameType ?? "srx";
+  let gameReg: ReturnType<typeof requireGame>;
+  try {
+    gameReg = requireGame(game);
+  } catch {
+    return NextResponse.json({ error: `Unknown game type: ${game}` }, { status: 500 });
+  }
+  const { adapter, metadata } = gameReg;
+
+  if (!metadata.supportsJoin) {
+    return NextResponse.json(
+      { error: `${metadata.displayName} sessions cannot be joined — they are fixed to a set number of players.` },
+      { status: 409 },
+    );
+  }
+
   if ((session.playerNames as string[]).length >= session.maxPlayers) {
     return NextResponse.json({ error: "Galaxy is full" }, { status: 409 });
   }
@@ -54,7 +72,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Name already taken in this galaxy" }, { status: 409 });
   }
 
-  const planetCreateData = createStarterPlanets();
+  const playerCreateData = adapter.getPlayerCreateData();
 
   const player = await prisma.$transaction(async (tx) => {
     const humansBefore = await tx.player.count({
@@ -87,7 +105,7 @@ export async function POST(req: NextRequest) {
         userId: cred.userId,
         turnOrder,
         gameSessionId: session.id,
-        empire: { create: createStarterEmpire(planetCreateData) },
+        ...(playerCreateData as object),
       },
       include: {
         empire: { include: { planets: true, army: true, supplyRates: true } },
@@ -124,8 +142,14 @@ export async function POST(req: NextRequest) {
     return p;
   });
 
+  // Game-specific: post-join hooks (e.g. notify other players, side effects).
+  if (adapter.onPlayerJoined) {
+    await adapter.onPlayerJoined(session.id, player.id);
+  }
+
   return NextResponse.json({
     ...player,
+    game,
     gameSessionId: session.id,
     galaxyName: session.galaxyName,
   }, { status: 201 });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { GameState } from "@/app/page";
+import type { GameState } from "@/lib/srx-game-types";
 import { getAvailableTech, TECH_TREE } from "@/lib/research";
 import { PLANET_CONFIG, UNIT_COST, ECON, MIL, FINANCE, COST_INFLATION, type PlanetTypeName } from "@/lib/game-constants";
 import { COMMAND_CENTER as CC, MILITARY_BUY } from "@/lib/ui-tooltips";

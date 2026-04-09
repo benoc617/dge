@@ -35,7 +35,6 @@ import {
   type TurnOrderInfo,
 } from "./turn-order";
 import {
-  canPlayerAct,
   openFullTurn,
   closeFullTurn,
   tryRollRound,
@@ -116,7 +115,7 @@ export interface SequentialActionOutcome {
 export interface DoorTickOutcome {
   /** Turn report if a tick ran; null if already processed or skip. */
   report: FullTurnReport;
-  /** True when the empire's turnOpen was set (but no tick ran — idempotent open). */
+  /** True when the player's turn slot was opened (but no tick ran — idempotent open). */
   turnOpened: boolean;
 }
 
@@ -260,7 +259,8 @@ export class GameOrchestrator<TState> {
     if (!hooks) throw new Error("GameOrchestrator: turnOrderHooks required for processSequentialTick");
     // Capture optional method to avoid TypeScript "possibly undefined" after async gaps.
     const processFullTick = this.definition.processFullTick;
-    if (!processFullTick) throw new Error("GameOrchestrator: definition.processFullTick required");
+    // If the game has no tick (e.g. chess), return null — no report.
+    if (!processFullTick) return { report: null };
 
     const turn = await getCurrentTurn(sessionId, hooks);
     if (!turn) {
@@ -310,10 +310,12 @@ export class GameOrchestrator<TState> {
       };
     }
 
-    const result = await processFullAction.call(this.definition, playerId, action, params);
+    const result = await processFullAction.call(this.definition, playerId, action, params, {
+      context: { turnMode: "sequential" },
+    });
 
     if (result.success) {
-      await advanceTurn(sessionId);
+      await advanceTurn(sessionId, this.turnOrderHooks);
       // Fire-and-forget AI sequence (sequential mode)
       if (runAiSequence) {
         runAiSequence.call(this.definition, sessionId).catch(() => {});
@@ -332,7 +334,7 @@ export class GameOrchestrator<TState> {
    *
    * Flow (inside lock): tryRollRound → openFullTurn → return tick report
    *
-   * The caller is responsible for pre-checking canPlayerAct and turnOpen
+   * The caller is responsible for pre-checking player eligibility before calling this.
    * (these are quick checks that can be done before acquiring the lock).
    */
   async processDoorTick(
@@ -346,14 +348,11 @@ export class GameOrchestrator<TState> {
       await tryRollRound(sessionId, hooks);
       const report = await openFullTurn(playerId, hooks);
 
-      // Re-fetch empire to check turnOpen (openFullTurn may have set it even
-      // without running a tick, if tickProcessed was already true).
-      const emp = await getDb().empire.findUnique({
-        where: { playerId },
-        select: { turnOpen: true },
-      });
+      // Check whether the slot is now open (openFullTurn may have set it even
+      // without running a tick (when isTickProcessed returned true).
+      const turnIsNowOpen = await hooks.isTurnOpen(playerId);
 
-      if (emp?.turnOpen && !report) {
+      if (turnIsNowOpen && !report) {
         return { report: null, turnOpened: true };
       }
       return { report: report as FullTurnReport, turnOpened: false };
@@ -383,11 +382,11 @@ export class GameOrchestrator<TState> {
     if (!processFullAction) throw new Error("GameOrchestrator: definition.processFullAction required");
 
     return withCommitLock(sessionId, async () => {
-      // Load fresh empire + session data inside the lock.
-      const [player, session] = await Promise.all([
+      // Load session data inside the lock. Player existence is checked via hook.
+      const [playerExists, session] = await Promise.all([
         getDb().player.findUnique({
           where: { id: playerId },
-          include: { empire: true },
+          select: { id: true },
         }),
         getDb().gameSession.findUnique({
           where: { id: sessionId },
@@ -395,7 +394,7 @@ export class GameOrchestrator<TState> {
         }),
       ]);
 
-      if (!player?.empire) {
+      if (!playerExists) {
         return {
           result: { success: false, message: "Player not found" },
           scheduleAiDrain: false,
@@ -410,9 +409,8 @@ export class GameOrchestrator<TState> {
         };
       }
 
-      const empire = player.empire;
-
-      if (!canPlayerAct(empire, session.actionsPerDay)) {
+      // Delegate the "can this player act?" check to the game hook.
+      if (!(await hooks.canPlayerAct(playerId, session.actionsPerDay))) {
         return {
           result: {
             success: false,
@@ -424,7 +422,7 @@ export class GameOrchestrator<TState> {
       }
 
       // Open the full-turn slot if not already open.
-      if (!empire.turnOpen) {
+      if (!(await hooks.isTurnOpen(playerId))) {
         if (action === "end_turn") {
           return {
             result: {
@@ -438,11 +436,10 @@ export class GameOrchestrator<TState> {
         await openFullTurn(playerId, hooks);
       }
 
-      // Build door-game opts based on action type.
-      const doorOpts: FullActionOptions =
-        action === "end_turn"
-          ? { tickOptions: { decrementTurnsLeft: false }, keepTickProcessed: false, skipEndgameSettlement: true }
-          : { tickOptions: { decrementTurnsLeft: false }, keepTickProcessed: true, skipEndgameSettlement: true };
+      // Build generic door-game context; the game interprets this internally.
+      const doorOpts: FullActionOptions = {
+        context: { turnMode: "door-game", isEndTurn: action === "end_turn" },
+      };
 
       const result = await processFullAction.call(this.definition, playerId, action, params, doorOpts);
 

@@ -1,11 +1,11 @@
 /**
  * @dge/engine — Sequential turn management.
  *
- * Game-agnostic: uses the shared engine DB schema fields
- * (`GameSession.currentTurnPlayerId`, `Empire.turnsLeft`, etc.).
+ * Game-agnostic: uses shared DB schema fields on GameSession and Player.
  *
- * SRX-specific hooks (runTick / processEndTurn) are injected via
- * TurnOrderHooks so this module has no dependency on game-engine.ts.
+ * Game-specific hooks (runTick / processEndTurn / getActivePlayers) are
+ * injected via TurnOrderHooks so this module has no dependency on any
+ * game implementation.
  */
 
 import { getDb } from "./db-context";
@@ -31,13 +31,25 @@ type ActivePlayer = { id: string; name: string; isAI: boolean; turnOrder: number
 
 /**
  * Callbacks that getCurrentTurn needs to auto-skip a timed-out player.
- * These are game-specific (SRX: runAndPersistTick + processAction("end_turn")).
+ * These are game-specific; inject them via registerGame hooks.
  */
 export interface TurnOrderHooks {
-  /** Run economy tick for the timed-out player and persist it. */
+  /** Run the economy/state tick for the timed-out player and persist it. */
   runTick(playerId: string): Promise<void>;
   /** Process an end_turn action for the timed-out player. */
   processEndTurn(playerId: string): Promise<void>;
+  /**
+   * Return the list of players who still have game turns remaining in this
+   * session. When omitted the engine returns ALL players in the session
+   * (game-agnostic default: treats every player as active until the session
+   * itself is marked complete).
+   *
+   * Override this for games where individual players can be eliminated
+   * mid-session (e.g. SRX: filter by empire.turnsLeft > 0).
+   */
+  getActivePlayers?(
+    sessionId: string,
+  ): Promise<{ id: string; name: string; isAI: boolean; turnOrder: number }[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,9 +114,17 @@ function buildInfo(
 // DB helpers
 // ---------------------------------------------------------------------------
 
-async function getActivePlayers(gameSessionId: string): Promise<ActivePlayer[]> {
+async function getActivePlayers(
+  gameSessionId: string,
+  hooks?: TurnOrderHooks,
+): Promise<ActivePlayer[]> {
+  if (hooks?.getActivePlayers) {
+    return hooks.getActivePlayers(gameSessionId);
+  }
+  // Default: all players in the session — game-agnostic (no game-state filter).
+  // Games where players can be individually eliminated should supply getActivePlayers.
   return getDb().player.findMany({
-    where: { gameSessionId, empire: { turnsLeft: { gt: 0 } } },
+    where: { gameSessionId },
     orderBy: { turnOrder: "asc" },
     select: { id: true, name: true, isAI: true, turnOrder: true },
   });
@@ -137,7 +157,7 @@ export async function getCurrentTurn(
     if (sessionCannotHaveActiveTurn(session)) return null;
     const turnStartedAt = session.turnStartedAt!;
 
-    const players = await getActivePlayers(gameSessionId);
+    const players = await getActivePlayers(gameSessionId, hooks);
     if (players.length === 0) return null;
 
     const current = resolveCurrentPlayer(players, session.currentTurnPlayerId);
@@ -172,16 +192,20 @@ export async function getCurrentTurn(
 
 /**
  * Advance to the next player in turn order. Resets the turn timer.
- * No game-specific callbacks needed.
+ * Pass the same TurnOrderHooks used for getCurrentTurn so the active-player
+ * list is consistent (e.g. SRX filters by empire.turnsLeft via the hook).
  */
-export async function advanceTurn(gameSessionId: string): Promise<TurnOrderInfo | null> {
+export async function advanceTurn(
+  gameSessionId: string,
+  hooks?: TurnOrderHooks,
+): Promise<TurnOrderInfo | null> {
   const session = await getDb().gameSession.findUnique({
     where: { id: gameSessionId },
     select: { currentTurnPlayerId: true, turnTimeoutSecs: true, waitingForHuman: true },
   });
   if (!session || session.waitingForHuman) return null;
 
-  const players = await getActivePlayers(gameSessionId);
+  const players = await getActivePlayers(gameSessionId, hooks);
   if (players.length === 0) return null;
 
   const current = resolveCurrentPlayer(players, session.currentTurnPlayerId);

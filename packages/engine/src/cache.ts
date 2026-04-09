@@ -2,25 +2,25 @@
  * @dge/engine — Cache-aside helpers for hot read paths.
  *
  * Keys follow the pattern:   {namespace}:{type}:{id}
- * e.g. srx:empire:{playerId}, srx:leaderboard:{sessionId}
+ * e.g. srx:player:{playerId}, srx:leaderboard:{sessionId}
  *
  * All functions fail-open: a Redis outage silently falls back to the DB.
  */
 import { rGet, rSetEx, rDel } from "./redis";
 
-const EMPIRE_TTL = 30;      // seconds
+const PLAYER_TTL = 30;      // seconds — cached player+state graph TTL
 const LEADERBOARD_TTL = 15; // seconds
 
-function empireKey(namespace: string, playerId: string) {
-  return `${namespace}:empire:${playerId}`;
+function playerKey(namespace: string, playerId: string) {
+  return `${namespace}:player:${playerId}`;
 }
 function leaderboardKey(namespace: string, sessionId: string) {
   return `${namespace}:leaderboard:${sessionId}`;
 }
 
 /**
- * Cache-aside for the full player+empire graph.
- * `fetch` is called on cache miss and the result is stored for EMPIRE_TTL seconds.
+ * Cache-aside for the full player+state graph.
+ * `fetch` is called on cache miss and the result is stored for PLAYER_TTL seconds.
  * Returns null if the player doesn't exist.
  */
 export async function getCachedPlayer<T>(
@@ -28,7 +28,7 @@ export async function getCachedPlayer<T>(
   playerId: string,
   fetch: () => Promise<T | null>,
 ): Promise<T | null> {
-  const key = empireKey(namespace, playerId);
+  const key = playerKey(namespace, playerId);
   const cached = await rGet(key);
   if (cached !== null) {
     try {
@@ -39,7 +39,7 @@ export async function getCachedPlayer<T>(
   }
   const result = await fetch();
   if (result !== null) {
-    await rSetEx(key, EMPIRE_TTL, JSON.stringify(result));
+    await rSetEx(key, PLAYER_TTL, JSON.stringify(result));
   }
   return result;
 }
@@ -67,9 +67,9 @@ export async function getCachedLeaderboard<T>(
   return result;
 }
 
-/** Evict the cached empire graph for a player. */
+/** Evict the cached player state graph for a player. */
 export async function invalidatePlayer(namespace: string, playerId: string): Promise<void> {
-  await rDel(empireKey(namespace, playerId));
+  await rDel(playerKey(namespace, playerId));
 }
 
 /** Evict the cached leaderboard for a session. */
@@ -77,13 +77,13 @@ export async function invalidateLeaderboard(namespace: string, sessionId: string
   await rDel(leaderboardKey(namespace, sessionId));
 }
 
-/** Evict both empire and leaderboard caches for a player in a session. */
+/** Evict both player and leaderboard caches for a player in a session. */
 export async function invalidatePlayerAndLeaderboard(
   namespace: string,
   playerId: string,
   sessionId: string | null | undefined,
 ): Promise<void> {
-  const keys = [empireKey(namespace, playerId)];
+  const keys = [playerKey(namespace, playerId)];
   if (sessionId) keys.push(leaderboardKey(namespace, sessionId));
   await rDel(...keys);
 }

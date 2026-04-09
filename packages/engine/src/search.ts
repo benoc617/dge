@@ -3,7 +3,7 @@
  *
  * Both algorithms are parameterized by SearchGameFunctions<TState>, where
  * TState is a complete world state containing all player data. Games that
- * track players as a separate array (e.g. SRX's PureEmpireState[]) should
+ * track players as a separate array (e.g. one state-slice per player) should
  * wrap that array in a single object and implement SearchGameFunctions for it.
  *
  * --- MCTS (recommended) ---

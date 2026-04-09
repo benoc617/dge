@@ -21,6 +21,7 @@ export async function GET(req: NextRequest) {
       status: true,
       startedAt: true,
       turnTimeoutSecs: true,
+      gameType: true,
     },
   });
 
@@ -28,7 +29,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
-  return NextResponse.json(session);
+  return NextResponse.json({ ...session, game: session.gameType });
 }
 
 export async function PATCH(req: NextRequest) {
@@ -68,8 +69,9 @@ export async function PATCH(req: NextRequest) {
       inviteCode: true,
       maxPlayers: true,
       turnTimeoutSecs: true,
+      gameType: true,
     },
   });
 
-  return NextResponse.json(updated);
+  return NextResponse.json({ ...updated, game: updated.gameType });
 }

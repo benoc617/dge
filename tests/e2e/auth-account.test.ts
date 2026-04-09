@@ -61,8 +61,11 @@ describe("auth account API", () => {
       body: JSON.stringify({ username: u, password: TEST_PASSWORD }),
     });
     expect(authLogin.status).toBe(200);
-    const d = authLogin.data as { games: { playerId: string }[] };
+    const d = authLogin.data as { games: { playerId: string; game: string; isYourTurn: boolean; currentTurnPlayer: string | null }[] };
     expect(d.games.length).toBe(1);
     expect(d.games[0].playerId).toBeTruthy();
+    expect(d.games[0].game).toBe("srx");
+    expect(typeof d.games[0].isYourTurn).toBe("boolean");
+    expect(d.games[0].isYourTurn).toBe(true);
   });
 });

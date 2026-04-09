@@ -1,20 +1,19 @@
 /**
  * SRX — door-game turns shim.
  *
- * Re-exports engine door-game functions, injecting SRX-specific hooks
- * (runAndPersistTick, runEndgameSettlementTick, enqueueAiTurnsForSession,
- * cache invalidation) so that API routes and the ai-worker call the same
- * signatures as before.
+ * Implements DoorGameHooks for the SRX game (all empire-specific DB operations)
+ * and re-exports engine door-game functions with those hooks pre-injected so
+ * that API routes and the ai-worker call the same signatures as before.
  *
- * SRX-specific door-game functions (AI move dispatch, auto-close TurnLog)
- * remain here and call through to engine functions with hooks.
+ * SRX-specific utilities (canPlayerAct, isStuckDoorTurnAfterSkipEndLog) live
+ * here — they were removed from the engine because they reference Empire fields.
  */
 
 import {
-  canPlayerAct,
   openFullTurn as _openFullTurn,
   closeFullTurn as _closeFullTurn,
   tryRollRound as _tryRollRound,
+  isSessionRoundTimedOut,
   type DoorGameHooks,
 } from "@dge/engine/door-game";
 
@@ -32,14 +31,10 @@ import { resolveDoorAiRuntimeSettings } from "@/lib/door-ai-runtime-settings";
 import { prisma } from "@/lib/prisma";
 
 // ---------------------------------------------------------------------------
-// Pure utilities — re-exported directly from engine
+// Pure re-exports from engine (game-agnostic)
 // ---------------------------------------------------------------------------
 
-export {
-  canPlayerAct,
-  isSessionRoundTimedOut,
-  isStuckDoorTurnAfterSkipEndLog,
-} from "@dge/engine/door-game";
+export { isSessionRoundTimedOut } from "@dge/engine/door-game";
 
 // ---------------------------------------------------------------------------
 // Re-exported constants from sub-modules
@@ -51,7 +46,40 @@ export {
 } from "@/lib/door-ai-runtime-settings";
 
 // ---------------------------------------------------------------------------
-// Door-game processAction option sets (SRX-specific)
+// SRX-specific pure utilities (previously in the engine — moved here because
+// they reference Empire table field names which are not engine concepts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Synchronous pre-lock check: can this player act given their empire state?
+ * SRX-specific: reads empire.turnsLeft and empire.fullTurnsUsedThisRound.
+ * Use this for quick pre-lock route checks and unit tests.
+ * Inside the lock the orchestrator delegates to the async DoorGameHooks.canPlayerAct.
+ */
+export function canPlayerAct(
+  empire: { turnsLeft: number; fullTurnsUsedThisRound: number },
+  actionsPerDay: number,
+): boolean {
+  return empire.turnsLeft > 0 && empire.fullTurnsUsedThisRound < actionsPerDay;
+}
+
+/**
+ * SRX diagnostic: true when the door-game repair path should re-close a
+ * stuck turn slot. Happens when skip/end_turn path left turnOpen=true but
+ * closeFullTurn never ran (tickProcessed was false at the time).
+ */
+export function isStuckDoorTurnAfterSkipEndLog(
+  turnOpen: boolean,
+  lastTurnLogAction: string | null | undefined,
+  tickProcessed: boolean | undefined,
+): boolean {
+  return turnOpen === true && lastTurnLogAction === "end_turn" && tickProcessed === false;
+}
+
+// ---------------------------------------------------------------------------
+// Door-game processAction option sets
+// These are SRX-specific ProcessActionOptions (not FullActionOptions) used
+// by the SRX simulation harness and applyDoorGameAIMove below.
 // ---------------------------------------------------------------------------
 
 /** Options for `processAction` during a door-game full turn (after tick is persisted). */
@@ -69,24 +97,140 @@ export const doorEndTurnOpts = {
 };
 
 // ---------------------------------------------------------------------------
-// SRX hook factory
+// SRX DoorGameHooks implementation (reads/writes Empire table)
 // ---------------------------------------------------------------------------
 
 function makeSrxHooks(options?: { scheduleAiDrain?: boolean }): DoorGameHooks {
   return {
-    async runTick(playerId, opts) {
-      return runAndPersistTick(playerId, opts);
+    async canPlayerAct(playerId, actionsPerDay) {
+      const emp = await getDb().empire.findUnique({
+        where: { playerId },
+        select: { turnsLeft: true, fullTurnsUsedThisRound: true },
+      });
+      if (!emp) return false;
+      return emp.turnsLeft > 0 && emp.fullTurnsUsedThisRound < actionsPerDay;
     },
+
+    async isTurnOpen(playerId) {
+      const emp = await getDb().empire.findUnique({
+        where: { playerId },
+        select: { turnOpen: true },
+      });
+      return emp?.turnOpen ?? false;
+    },
+
+    async isTickProcessed(playerId) {
+      const emp = await getDb().empire.findUnique({
+        where: { playerId },
+        select: { tickProcessed: true },
+      });
+      return emp?.tickProcessed ?? false;
+    },
+
+    async hasTurnsRemaining(playerId) {
+      const emp = await getDb().empire.findUnique({
+        where: { playerId },
+        select: { turnsLeft: true },
+      });
+      return (emp?.turnsLeft ?? 0) > 0;
+    },
+
+    async openTurnSlot(playerId) {
+      await getDb().empire.update({
+        where: { playerId },
+        data: { turnOpen: true },
+      });
+    },
+
+    async closeTurnSlot(playerId) {
+      await getDb().empire.updateMany({
+        where: { playerId, turnsLeft: { gt: 0 } },
+        data: {
+          turnOpen: false,
+          tickProcessed: false,
+          fullTurnsUsedThisRound: { increment: 1 },
+          turnsLeft: { decrement: 1 },
+        },
+      });
+      const emp = await getDb().empire.findUnique({
+        where: { playerId },
+        select: { turnsLeft: true },
+      });
+      return { remainingTurns: emp?.turnsLeft ?? 0 };
+    },
+
+    async forfeitSlots(playerId, slotsLeft, _sessionId) {
+      const emp = await getDb().empire.findUnique({
+        where: { playerId },
+        select: { turnsLeft: true, fullTurnsUsedThisRound: true },
+      });
+      if (!emp) return { remainingTurns: 0 };
+      const newTurnsLeft = Math.max(0, emp.turnsLeft - slotsLeft);
+      await getDb().empire.update({
+        where: { playerId },
+        data: {
+          fullTurnsUsedThisRound: { increment: slotsLeft },
+          turnOpen: false,
+          tickProcessed: false,
+          turnsLeft: newTurnsLeft,
+        },
+      });
+      return { remainingTurns: newTurnsLeft };
+    },
+
+    async resetDailySlots(sessionId) {
+      await getDb().empire.updateMany({
+        where: { player: { gameSessionId: sessionId } },
+        data: {
+          fullTurnsUsedThisRound: 0,
+          tickProcessed: false,
+          turnOpen: false,
+        },
+      });
+    },
+
+    async getPlayerSlotUsage(sessionId) {
+      const players = await getDb().player.findMany({
+        where: { gameSessionId: sessionId, empire: { turnsLeft: { gt: 0 } } },
+        include: {
+          empire: { select: { fullTurnsUsedThisRound: true, turnsLeft: true } },
+        },
+      });
+      return players.map((p) => ({
+        id: p.id,
+        slotsUsed: p.empire?.fullTurnsUsedThisRound ?? 0,
+        hasRemainingTurns: (p.empire?.turnsLeft ?? 0) > 0,
+      }));
+    },
+
+    async runTick(playerId) {
+      return runAndPersistTick(playerId, { decrementTurnsLeft: false });
+    },
+
     async runEndgameTick(playerId, sessionId) {
       await runEndgameSettlementTick(playerId);
       dumpAndPurgeSessionLogsIfComplete(sessionId);
     },
+
+    async logSessionEvent(sessionId, payload) {
+      await getDb().gameEvent.create({
+        data: {
+          gameSessionId: sessionId,
+          type: payload.type,
+          message: payload.message,
+          details: payload.details as object,
+        },
+      });
+    },
+
     invalidatePlayer(playerId) {
       void invalidatePlayer(playerId);
     },
+
     invalidateLeaderboard(sessionId) {
       void invalidateLeaderboard(sessionId);
     },
+
     onDayComplete(sessionId) {
       // Evict stale player caches for all session members so the next status
       // poll immediately sees the new day (resets fullTurnsUsedThisRound → 0).
@@ -104,11 +248,11 @@ function makeSrxHooks(options?: { scheduleAiDrain?: boolean }): DoorGameHooks {
 }
 
 // ---------------------------------------------------------------------------
-// Engine wrappers with SRX hooks
+// Engine wrappers with SRX hooks injected
 // ---------------------------------------------------------------------------
 
 /**
- * Run economy tick for a new full turn and mark the empire as mid-turn (`turnOpen`).
+ * Run economy tick for a new full turn and mark the player's turn slot as open.
  */
 export async function openFullTurn(playerId: string): Promise<TurnReport | null> {
   return _openFullTurn(playerId, makeSrxHooks()) as Promise<TurnReport | null>;
@@ -127,7 +271,7 @@ export async function closeFullTurn(
 }
 
 /**
- * When every active empire has used all full turns for the round (or the round
+ * When every active player has used all full turns for the round (or the round
  * deadline passed), advance the calendar day.
  *
  * @returns true if a roll occurred
@@ -226,8 +370,8 @@ export async function applyDoorGameAIMove(
     },
     doorActionOpts,
   );
-  // Invalid action → skip path runs processAction(end_turn) but never hit closeFullTurn; without this
-  // the empire stays turnOpen with fullTurnsUsed stuck at 0 and the galaxy never advances.
+  // Invalid action → skip path runs processAction(end_turn) but never hits closeFullTurn;
+  // without this the player stays turnOpen and the round never advances.
   if (out.skipped && out.finalResult.success) {
     await closeFullTurn(playerId, sessionId, options);
     return;
@@ -246,7 +390,7 @@ export async function applyDoorGameAIMove(
 }
 
 /**
- * Ensure tick is open and `turnOpen` is set so `getAIMoveDecision` is valid.
+ * Ensure tick is open and the turn slot is open so `getAIMoveDecision` is valid.
  */
 export async function ensureDoorGameFullTurnOpen(playerId: string): Promise<boolean> {
   const player = await getDb().player.findUnique({
@@ -294,5 +438,5 @@ export async function runOneDoorGameAI(
   await applyDoorGameAIMove(playerId, move, sessionId, options);
 }
 
-export { withCommitLock, GalaxyBusyError } from "@/lib/db-context";
+export { withCommitLock, SessionBusyError, GalaxyBusyError } from "@/lib/db-context";
 export { enqueueAiTurnsForSession } from "@/lib/ai-job-queue";

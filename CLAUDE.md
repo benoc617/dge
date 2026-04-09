@@ -318,8 +318,8 @@ This repo uses an **npm workspace monorepo** where game-agnostic infrastructure 
 
 | Package | Import | Role |
 |---------|--------|------|
-| `packages/shared/` | `@dge/shared` | TypeScript types only: `GameDefinition<TState>`, `ActionResult`, `ReplayFrame`, `Move`, `Rng` |
-| `packages/engine/` | `@dge/engine` | Runtime: `GameOrchestrator`, registry, MCTS search, turn management, AI runner, cache, DB lock |
+| `packages/shared/` | `@dge/shared` | TypeScript types only: `GameDefinition<TState>`, `ActionResult`, `ReplayFrame`, `Move`, `Rng`, **`GameMetadata`**, **`GameHttpAdapter`**, `GameCreateOption` |
+| `packages/engine/` | `@dge/engine` | Runtime: `GameOrchestrator`, registry (`registerGame`, `requireGame`), MCTS search, turn management, AI runner, cache, DB lock |
 | `packages/shell/` | `@dge/shell` | React UI: `GameLayout`, `TurnIndicator`, `useGameState`, `useGameAction`, `GameUIConfig<TState>` |
 | `games/srx/` | `@dge/srx` | SRX game definition: `srxGameDefinition` implements `GameDefinition<SrxWorldState>` |
 
@@ -328,7 +328,9 @@ This repo uses an **npm workspace monorepo** where game-agnostic infrastructure 
 - **Engine never imports game code** — no references to `@/lib/game-engine`, `sim-state`, `door-game-turns`, etc.
 - **Shell never imports game components** — only `GameStateBase` and `GameUIConfig<TState>` are game-aware
 - **Game-specific hooks injected via interfaces** — `TurnOrderHooks` / `DoorGameHooks` let the engine call game persistence without knowing SRX
-- **Registration side-effect** — `src/lib/srx-registration.ts` wires SRX into the engine registry; import it once at route startup
+- **Registration side-effect** — `src/lib/srx-registration.ts` wires SRX into the engine registry (definition + `GameMetadata` + `GameHttpAdapter` + hooks); imported via `src/lib/game-bootstrap.ts`
+- **`src/lib/game-bootstrap.ts`** — single module that imports all game registration files; API routes import this once instead of individual game registration modules
+- **`src/lib/srx-http-adapter.ts`** — implements `GameHttpAdapter` for SRX; extracts game-specific payload construction from API routes (`buildStatus`, `buildLeaderboard`, `buildGameOver`, `getPlayerCreateData`, `onSessionCreated`, `computeHubTurnState`)
 
 ### Help system (per game)
 
@@ -355,13 +357,14 @@ When updating game mechanics, update the help file alongside `games/{name}/docs/
 ### Adding a second game
 
 1. Create `games/{name}/src/definition.ts` implementing `GameDefinition<{Name}State>`
-2. Create `games/{name}/src/help-content.ts` with `HELP_REGISTRY` entry
+2. Create `games/{name}/src/help-content.ts` with `HELP_REGISTRY` entry; add it to the `COMBINED_REGISTRY` in `src/app/api/game/help/route.ts`
 3. Create `games/{name}/src/index.ts` barrel exporting the definition and state type
 4. Create `games/{name}/package.json` as `@dge/{name}` and `games/{name}/docs/GAME-SPEC.md`
-5. Add a `src/lib/{name}-registration.ts` side-effect module that calls `registerGame("{name}", definition, hooks)`
-6. Import the registration module at the top of the relevant API route files
-7. Create a `GameUIConfig<{Name}State>` and pass it to `<GameLayout>` in the UI
-8. Add unit tests in `tests/unit/{name}-*.test.ts` and E2E tests in `tests/e2e/{name}-*.test.ts`
+5. Implement `GameMetadata` (lobby card + create-form options) and `GameHttpAdapter` (API payload hooks — `buildStatus`, `getPlayerCreateData`, `defaultTotalTurns`, etc.)
+6. Add a `src/lib/{name}-registration.ts` side-effect module that calls `registerGame("{name}", { definition, metadata, adapter, hooks })`
+7. Add one import to `src/lib/game-bootstrap.ts`: `import "@/lib/{name}-registration"` — all routes that import `game-bootstrap` will pick up the new game automatically
+8. Create `src/components/{Name}GameScreen.tsx` for the in-game UI; register it in `GAME_SCREEN_REGISTRY` and `CLIENT_GAME_REGISTRY` in `src/app/page.tsx`
+9. Add unit tests in `tests/unit/{name}-*.test.ts` and E2E tests in `tests/e2e/{name}-*.test.ts`
 
 ### Tests for engine and game code
 
@@ -497,8 +500,11 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - The `GITHUB_TOKEN` env var in `.zshrc` points to a different account (`boconnor_axoncorp`) and will override `gh` account switching if set — unset it before running `gh` commands: `unset GITHUB_TOKEN && gh ...`
 
 ## UI structure
-- Single-page app in `src/app/page.tsx` with 3-column layout (3-5-4 grid on lg screens)
-- **Screens flow**: Login (**Login** / **Sign up**) → Sign up form (username, full name, email, password ×2) → Login → **Command Center** (your games + Create Galaxy / Join Galaxy / Log out) → **Create Galaxy** (single screen: settings + optional AI rivals) → Main Game; OR Command Center → Join (invite code or public list; session password) → Main Game. Legacy login (no `UserAccount`) goes straight into the game when a matching active player exists.
+- Single-page app in `src/app/page.tsx` — a **thin lobby shell** that handles login, signup, and game selection. Once a session is active it dispatches to the selected game's `GameScreen` component (registered in `GAME_SCREEN_REGISTRY`).
+- **`src/app/page.tsx` roles**: lobby only — authentication (`login`, `game-select`, `hub`, `join-game`, `create-galaxy` phases), reading `CLIENT_GAME_REGISTRY` (client-side mirror of `GameMetadata`) to render game cards and create-game forms dynamically, and dispatching to the correct `GameScreen`.
+- **`src/components/SrxGameScreen.tsx`** — owns the full SRX in-game UI (header, panels, polling, modals). Receives initial session props from `page.tsx` and manages all game state internally.
+- **Screens flow**: Login (**Login** / **Sign up**) → Sign up form → Login → **Game Select** (cards from `CLIENT_GAME_REGISTRY`) → **Command Center / Hub** (your active games for the selected game + Create / Join / Log out) → **Create Galaxy** (dynamic options from `createOptions`) → `GameScreen`; OR Hub → Join → `GameScreen`. Legacy login (no `UserAccount`) goes straight into the game when a matching active player exists.
+- **`game` field** — all API responses use `game` (not `gameType`). The DB column remains `GameSession.gameType`; routes map it at the boundary.
 - **Login screen** (username + password) → **Login** or **Sign up**; link to **`/admin`**
 - Top: `Leaderboard` — Galactic Powers panel with column headers (Rk, Commander, **Prt** on sm+, Worth, Pop, Plt, Turns, Mil). **Turns** = `turnsPlayed` (economy ticks). **Prt** shows `[PN]` when that rival has new-empire protection. Click a rival to auto-select them as target in the WAR/OPS dropdowns.
 - Left (3 cols): `EmpirePanel` — **compact stat-box grid layout** with Net Worth + Civil Status boxes at top, resource grid (4-col), population/tax row, sell rates inline, military mini-stat grid, planet badges, and collapsible planet details.

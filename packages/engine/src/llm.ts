@@ -19,18 +19,18 @@ import { withGeminiGeneration } from "./ai-concurrency";
 
 /** Context passed to the AI move generator — who are the rivals and who am I? */
 export type AIMoveContext = {
-  /** This AI player's commander name (never a valid attack target). */
+  /** This AI player's name (never a valid attack target). */
   commanderName: string;
   /** Other players in the same session (human + AI), excluding self. */
   rivalNames: string[];
   /**
-   * Subset of rivalNames whose empires are not under protection — the only valid
-   * `target` for attack_* and covert_op. Empty when every rival is protected.
+   * Subset of rivalNames that are valid attack targets (e.g. not under
+   * new-empire protection in SRX). Empty when no valid targets exist.
    */
   rivalAttackTargets: string[];
-  /** AI player's own player ID — used by MCTS to fetch rival empires. */
+  /** AI player's own player ID — may be used by MCTS for state fetching. */
   playerId?: string;
-  /** Session ID — used by MCTS to fetch rival empires from the same game. */
+  /** Session ID — may be used by MCTS for session state fetching. */
   gameSessionId?: string;
 };
 
@@ -62,9 +62,12 @@ const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 const DEFAULT_GEMINI_TIMEOUT_MS = 60_000;
 const MAX_GEMINI_TIMEOUT_MS = 300_000;
 
-/** When `1` or `true`, logs JSON timing lines to stdout for AI move latency. */
+/**
+ * When `1` or `true`, logs JSON timing lines to stdout for AI move latency.
+ * Env var: `DGE_LOG_AI_TIMING` (preferred) or legacy `SRX_LOG_AI_TIMING`.
+ */
 export function shouldLogAiTiming(): boolean {
-  const v = process.env.SRX_LOG_AI_TIMING;
+  const v = process.env.DGE_LOG_AI_TIMING ?? process.env.SRX_LOG_AI_TIMING;
   return v === "1" || v === "true";
 }
 

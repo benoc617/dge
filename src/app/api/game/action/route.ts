@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse, after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireGame } from "@dge/engine/registry";
-import { GalaxyBusyError } from "@/lib/db-context";
+import { SessionBusyError } from "@/lib/db-context";
 import { enqueueAiTurnsForSession } from "@/lib/ai-job-queue";
 import { logSrxTiming, msBetween, msElapsed } from "@/lib/srx-timing";
 import { invalidatePlayerAndLeaderboard } from "@/lib/game-state-service";
-import "@/lib/srx-registration"; // ensure SRX game is registered before any dispatch
+import "@/lib/game-bootstrap"; // ensure all games are registered before any dispatch
 
 export async function POST(req: NextRequest) {
   const tRoute = performance.now();
@@ -16,12 +16,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "playerName and action required" }, { status: 400 });
   }
 
+  // Find the player by name — any active game, no empire filter (chess players have no empire).
+  // For SRX the game-over check happens below after determining game type.
   const player = await prisma.player.findFirst({
-    where: { name: playerName, empire: { turnsLeft: { gt: 0 } } },
+    where: { name: playerName },
     orderBy: { createdAt: "desc" },
     include: { empire: true },
   });
-  if (!player || !player.empire) {
+  if (!player) {
     return NextResponse.json({ error: "Player not found" }, { status: 404 });
   }
 
@@ -32,20 +34,29 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(result);
   }
 
+  // gameType is in schema but may not appear in generated select types; fetch full row and cast.
   const sess = await prisma.gameSession.findUnique({
     where: { id: player.gameSessionId },
-    select: { turnMode: true, waitingForHuman: true, gameType: true },
-  });
+  }) as { turnMode: string; waitingForHuman: boolean; status: string; gameType?: string | null } | null;
+
+  // For SRX: game is over when turnsLeft hits 0 — return 410 Gone.
+  const gameType = sess?.gameType ?? "srx";
+  if (gameType === "srx" && player.empire && player.empire.turnsLeft <= 0) {
+    return NextResponse.json({ error: "Game over — no turns remaining." }, { status: 410 });
+  }
+  // For any game: session marked complete → 410 Gone.
+  if (sess?.status === "complete") {
+    return NextResponse.json({ error: "Game over — session is complete." }, { status: 410 });
+  }
 
   if (sess?.waitingForHuman) {
     return NextResponse.json({
       success: false,
-      error: "Galaxy has not started yet.",
+      error: "Game session has not started yet.",
       waitingForGameStart: true,
     }, { status: 409 });
   }
 
-  const gameType = sess?.gameType ?? "srx";
   const game = requireGame(gameType);
 
   // -------------------------------------------------------------------------
@@ -89,12 +100,12 @@ export async function POST(req: NextRequest) {
       });
       return NextResponse.json(result);
     } catch (err) {
-      if (err instanceof GalaxyBusyError) {
-        logSrxTiming("door_action_galaxy_busy", {
+      if (err instanceof SessionBusyError) {
+        logSrxTiming("door_action_session_busy", {
           playerName, action, sessionId: player.gameSessionId,
         });
         return NextResponse.json(
-          { success: false, error: err.message, galaxyBusy: true },
+          { success: false, error: err.message, sessionBusy: true },
           { status: 409, headers: { "Retry-After": "0" } },
         );
       }
@@ -123,7 +134,7 @@ export async function POST(req: NextRequest) {
     if (s?.waitingForHuman) {
       return NextResponse.json({
         success: false,
-        error: "Galaxy has not started yet.",
+        error: "Game session has not started yet.",
         waitingForGameStart: true,
       }, { status: 409 });
     }

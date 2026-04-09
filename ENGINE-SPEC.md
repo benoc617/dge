@@ -152,13 +152,93 @@ The orchestrator calls full-track methods in response to HTTP actions. The searc
 ## 5. Game Registry (`packages/engine/src/registry.ts`)
 
 ```typescript
-registerGame(gameType: string, definition: GameDefinition<any>, uiConfig: GameUIConfig<any>): void
-getGame(gameType: string): { definition, uiConfig } | undefined
-requireGame(gameType: string): { definition, uiConfig }   // throws if not found
+// Registration input — passed to registerGame()
+interface GameRegistrationInput<TState> {
+  definition: GameDefinition<TState>;
+  metadata: GameMetadata;      // lobby metadata (display name, options, player range)
+  adapter: GameHttpAdapter;    // API route delegation hooks
+  hooks?: GameHooks;           // engine lifecycle hooks (turn order, door-game)
+}
+
+registerGame(gameType: string, input: GameRegistrationInput<TState>): void
+getGame(gameType: string): GameRegistration | undefined
+requireGame(gameType: string): GameRegistration   // throws if not found
+listGameTypes(): string[]
 _clearRegistry(): void   // test helper only
 ```
 
-Games register at application startup. SRX registers via `src/lib/srx-registration.ts` which is imported by `src/app/layout.tsx`.
+Each registered game provides three pluggable objects alongside its `GameDefinition`:
+
+| Object | Purpose |
+|--------|---------|
+| `GameMetadata` | Drives the generic lobby UI (display name, description, player range, create-game options) |
+| `GameHttpAdapter` | Delegates game-specific API payload construction (status, leaderboard, game-over, player init) |
+| `GameHooks` | Injects game-specific engine lifecycle callbacks (sequential turn-order, door-game close/roll) |
+
+All games register at application startup. Instead of importing each game's registration file in every API route, a single **bootstrap module** consolidates all registrations:
+
+```typescript
+// src/lib/game-bootstrap.ts — import this once in any API route
+import "@/lib/srx-registration";
+// import "@/lib/chess-registration";   ← add new games here
+```
+
+Routes call `requireGame(game)` (where `game` comes from `GameSession.gameType` mapped to the `game` field in API responses) to retrieve the orchestrator, metadata, or adapter for the session's game type.
+
+### 5.1 `GameMetadata` (lobby contract)
+
+```typescript
+interface GameMetadata {
+  game: string;              // canonical key matching GameSession.gameType
+  displayName: string;       // name shown on the game-select card
+  description: string;       // short blurb
+  playerRange: [number, number]; // [min, max] players
+  supportsJoin: boolean;     // whether players can join via invite/public list
+  autoCreateAI?: boolean;    // server auto-creates an AI opponent on creation
+  createOptions: GameCreateOption[];  // options rendered in the create-game form
+}
+
+interface GameCreateOption {
+  key: string;
+  label: string;
+  description?: string;
+  type: "number" | "boolean" | "select";
+  default: unknown;
+  min?: number; max?: number;
+  options?: { value: string; label: string }[];
+}
+```
+
+The client mirrors this as a static `ClientGameMetadata` array (`CLIENT_GAME_REGISTRY` in `src/app/page.tsx`) so the lobby UI renders without server dependencies.
+
+### 5.2 `GameHttpAdapter` (API delegation contract)
+
+```typescript
+interface GameHttpAdapter {
+  // Status & read paths
+  buildStatus(playerId: string): Promise<Record<string, unknown>>;
+  buildLeaderboard?(sessionId: string | null): Promise<unknown[]>;
+  buildGameOver?(sessionId: string, playerName: string): Promise<Record<string, unknown>>;
+
+  // Session & player initialization
+  getPlayerCreateData(): Record<string, unknown>;
+  onSessionCreated?(sessionId, creatorPlayerId, options): Promise<void>;
+  onPlayerJoined?(sessionId, playerId): Promise<void>;
+
+  // Session defaults
+  defaultTotalTurns: number;
+  defaultActionsPerDay: number;
+
+  // Hub games list (login response)
+  computeHubTurnState?(player, session): Promise<{ isYourTurn, currentTurnPlayer }>;
+}
+```
+
+API routes call adapter methods instead of branching on game type. SRX's adapter lives in `src/lib/srx-http-adapter.ts`.
+
+### 5.3 `game` field vs `gameType` column
+
+The database column is `GameSession.gameType`. The API and UI use the field name `game`. Routes map `gameType → game` in every outbound JSON response. This keeps the DB schema stable while giving the public API a cleaner name.
 
 ---
 
@@ -375,20 +455,46 @@ Shared React infrastructure:
 | `GameLayout` | Three/two/single column layout renderer |
 | `TurnIndicator` | Generic whose-turn display |
 
-Game-specific UI (panels, leaderboard row, event line) lives in `games/<name>/src/components/` and is registered via `GameUIConfig`.
+Game-specific UI lives in `games/<name>/src/components/` and can be exposed via `GameUIConfig` for layout-driven rendering, or wrapped entirely in a top-level `GameScreen` component registered in `GAME_SCREEN_REGISTRY` in `src/app/page.tsx`. The latter approach gives a game full control over its in-game UI layout without having to fit into the three-column shell.
+
+### Lobby UI
+
+`src/app/page.tsx` drives the lobby without game-specific code. It reads `CLIENT_GAME_REGISTRY` (a client-side array of `ClientGameMetadata` objects mirroring `GameMetadata`) to:
+
+- Render a **game-select card** per game (name, description)
+- Render a **create-game form** with per-game options (dynamic inputs from `createOptions`)
+- Filter the **hub** game list by selected game
+- Pass the correct `game` key to `POST /api/game/register` and `POST /api/game/join`
+
+No game-specific conditional code appears in the lobby screens.
 
 ---
 
 ## 16. Adding a New Game
 
-1. Create `games/<name>/` with `package.json` (`@dge/<name>`), `tsconfig.json`, `src/definition.ts`
-2. Implement `GameDefinition<TState>` — at minimum `processFullAction`, `processFullTick`, `runAiSequence`, `applyAction`, `evalState`, `generateCandidateMoves`
-3. Implement `GameUIConfig<TState>` (layout + panel components)
-4. Create `games/<name>/src/help-content.ts` with HELP_REGISTRY entry
-5. Register via `registerGame(gameType, definition, uiConfig)` in the wiring layer (e.g. `src/lib/<name>-registration.ts`)
-6. Import the registration file in `src/app/layout.tsx`
-7. Add any game-specific Prisma models to `prisma/schema.prisma` and `db push`
-8. Add unit tests in `tests/unit/<name>-*.test.ts` and E2E tests in `tests/e2e/<name>-*.test.ts`
+1. **Create `games/<name>/`** with `package.json` (`@dge/<name>`), `tsconfig.json`, `src/definition.ts`, and `games/<name>/docs/GAME-SPEC.md`
+2. **Implement `GameDefinition<TState>`** — at minimum `loadState`, `saveState`, `applyAction`, `evalState`, `generateCandidateMoves`. Add `applyTick` if your game has economy ticks.
+3. **Implement `GameMetadata`** — display name, description, player range, `supportsJoin`, and `createOptions` for the lobby form.
+4. **Implement `GameHttpAdapter`** — at minimum `buildStatus`, `getPlayerCreateData`, `defaultTotalTurns`, `defaultActionsPerDay`. Add `onSessionCreated`, `onPlayerJoined`, `buildLeaderboard`, `buildGameOver`, `computeHubTurnState` as needed.
+5. **Create `src/lib/<name>-registration.ts`** calling `registerGame("<name>", { definition, metadata, adapter, hooks })`.
+6. **Add the registration import to `src/lib/game-bootstrap.ts`** — one line: `import "@/lib/<name>-registration"`.
+7. **Create a `GameScreen` component** (e.g. `src/components/<Name>GameScreen.tsx`) that owns the full in-game UI. It receives the same props as `SrxGameScreen` (`playerName`, `sessionPlayerId`, `gameSessionId`, `initialInviteCode`, `initialGalaxyName`, `initialIsPublic`, `isCreator`, `initialEvents`, `onLogout`).
+8. **Register the `GameScreen`** in `GAME_SCREEN_REGISTRY` in `src/app/page.tsx` and add a matching entry to `CLIENT_GAME_REGISTRY`.
+9. **Create `games/<name>/src/help-content.ts`** with a `HELP_REGISTRY` entry; add it to the `COMBINED_REGISTRY` in `src/app/api/game/help/route.ts`.
+10. **Add any game-specific Prisma models** to `prisma/schema.prisma` and run `docker compose exec app npx prisma db push`.
+11. **Add tests** — unit tests in `tests/unit/<name>-*.test.ts`, E2E tests in `tests/e2e/<name>-*.test.ts`.
+
+### UI dispatch flow (pages and lobby)
+
+`src/app/page.tsx` is a thin lobby shell. It handles login/signup and game selection using `CLIENT_GAME_REGISTRY` (client-side mirror of `GameMetadata`). Once a game session is active (`playerName` is set), it dispatches to the game's `GameScreen` component from `GAME_SCREEN_REGISTRY`:
+
+```typescript
+// In page.tsx
+const GameScreen = GAME_SCREEN_REGISTRY[activeGame] ?? SrxGameScreen;
+return <GameScreen {...sessionProps} onLogout={handleLogout} />;
+```
+
+Each `GameScreen` fully owns its in-game UI — panels, polling, actions, modals. The lobby shell only passes initial session props (IDs, invite code, galaxy name, etc.).
 
 ---
 

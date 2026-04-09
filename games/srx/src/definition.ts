@@ -36,7 +36,7 @@ import {
   empireFromPrisma,
   cloneEmpire,
 } from "@/lib/sim-state";
-import type { ActionType } from "@/lib/game-engine";
+import type { ActionType, ProcessActionOptions } from "@/lib/game-engine";
 import { processAction, runAndPersistTick } from "@/lib/game-engine";
 import { runAISequence as srxRunAISequence } from "@/lib/ai-runner";
 import { doorGameAutoCloseFullTurnAfterAction } from "@/lib/door-game-turns";
@@ -324,8 +324,18 @@ export const srxGameDefinition: GameDefinition<SrxWorldState> = {
     params: Record<string, unknown>,
     opts?: FullActionOptions,
   ): Promise<FullActionResult> {
-    // processAction returns { success, message, ...extra }; cast is safe.
-    return processAction(playerId, action as ActionType, params, opts) as Promise<FullActionResult>;
+    // Bridge generic engine context → SRX-internal ProcessActionOptions.
+    // The engine no longer knows SRX-specific fields (keepTickProcessed, etc.);
+    // those are derived here from the generic context.
+    const srxOpts: ProcessActionOptions = {
+      logMeta: opts?.logMeta,
+    };
+    if (opts?.context?.turnMode === "door-game") {
+      srxOpts.tickOptions = { decrementTurnsLeft: false };
+      srxOpts.keepTickProcessed = !opts.context.isEndTurn;
+      srxOpts.skipEndgameSettlement = true;
+    }
+    return processAction(playerId, action as ActionType, params, srxOpts) as Promise<FullActionResult>;
   },
 
   async processFullTick(playerId: string): Promise<FullTurnReport> {

@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { normalizeUsername } from "@/lib/auth";
-import { getCurrentTurn } from "@/lib/turn-order";
+import { requireGame } from "@dge/engine/registry";
+import "@/lib/game-bootstrap"; // ensure all games are registered
 
 export async function POST(req: NextRequest) {
   const { username, password } = await req.json();
@@ -46,6 +47,7 @@ export async function POST(req: NextRequest) {
     playerName: string;
     gameSessionId: string;
     galaxyName: string | null;
+    game: string;
     turnsLeft: number;
     turnsPlayed: number;
     inviteCode: string | null;
@@ -60,28 +62,48 @@ export async function POST(req: NextRequest) {
   for (const p of players) {
     const sess = p.gameSession;
     if (!sess || sess.status !== "active") continue;
+
+    const game = sess.gameType ?? "srx";
+
+    // Delegate turn-state computation to the game adapter.
     let isYourTurn = false;
     let currentTurnPlayer: string | null = null;
-    if (sess.turnMode === "simultaneous") {
-      // Simultaneous: isYourTurn = player still has daily action slots available.
-      // getCurrentTurn is a sequential concept and returns wrong results here.
-      const used = p.empire!.fullTurnsUsedThisRound ?? 0;
-      const fullTurnsLeftToday = Math.max(0, sess.actionsPerDay - used);
-      isYourTurn = fullTurnsLeftToday > 0 && p.empire!.turnsLeft > 0;
-    } else {
-      const turn = await getCurrentTurn(sess.id);
-      if (turn) {
-        isYourTurn = turn.currentPlayerId === p.id;
-        currentTurnPlayer = turn.currentPlayerName;
+    try {
+      const { adapter } = requireGame(game);
+      if (adapter.computeHubTurnState) {
+        const ts = await adapter.computeHubTurnState(
+          {
+            id: p.id,
+            empire: p.empire
+              ? { fullTurnsUsedThisRound: p.empire.fullTurnsUsedThisRound ?? 0, turnsLeft: p.empire.turnsLeft }
+              : null,
+          },
+          {
+            id: sess.id,
+            turnMode: sess.turnMode,
+            actionsPerDay: sess.actionsPerDay,
+            currentTurnPlayerId: sess.currentTurnPlayerId,
+          },
+        );
+        isYourTurn = ts.isYourTurn;
+        currentTurnPlayer = ts.currentTurnPlayer;
+      } else {
+        // Generic sequential default.
+        isYourTurn = sess.currentTurnPlayerId === p.id;
+        currentTurnPlayer = null;
       }
+    } catch {
+      // Unknown game type — skip turn state.
     }
+
     games.push({
       playerId: p.id,
       playerName: p.name,
       gameSessionId: sess.id,
       galaxyName: sess.galaxyName,
-      turnsLeft: p.empire!.turnsLeft,
-      turnsPlayed: p.empire!.turnsPlayed,
+      game,
+      turnsLeft: p.empire?.turnsLeft ?? 0,
+      turnsPlayed: p.empire?.turnsPlayed ?? 0,
       inviteCode: sess.inviteCode,
       isPublic: sess.isPublic,
       isYourTurn,

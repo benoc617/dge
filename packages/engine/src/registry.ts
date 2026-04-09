@@ -8,10 +8,13 @@
  * at application startup (e.g. by importing `@/lib/srx-registration`).
  */
 
-import type { GameDefinition } from "@dge/shared";
+import type { GameDefinition, GameMetadata, GameHttpAdapter } from "@dge/shared";
 import { GameOrchestrator } from "./orchestrator";
 import type { TurnOrderHooks } from "./turn-order";
 import type { DoorGameHooks } from "./door-game";
+
+// Re-export so callers can import these types from @dge/engine/registry.
+export type { GameMetadata, GameHttpAdapter } from "@dge/shared";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -24,9 +27,18 @@ export interface GameHooks {
   doorGame?: DoorGameHooks;
 }
 
+export interface GameRegistrationInput<TState> {
+  definition: GameDefinition<TState>;
+  metadata: GameMetadata;
+  adapter: GameHttpAdapter;
+  hooks?: GameHooks;
+}
+
 export interface GameRegistration<TState = unknown> {
   definition: GameDefinition<TState>;
   orchestrator: GameOrchestrator<TState>;
+  metadata: GameMetadata;
+  adapter: GameHttpAdapter;
 }
 
 // ---------------------------------------------------------------------------
@@ -40,7 +52,7 @@ const _games = new Map<string, GameRegistration<unknown>>();
 // ---------------------------------------------------------------------------
 
 /**
- * Register a game definition with its engine hooks.
+ * Register a game with its definition, metadata, HTTP adapter, and engine hooks.
  * Creates a `GameOrchestrator` bound to the definition + hooks.
  *
  * Should be called once at startup (importing the registration module is enough).
@@ -48,17 +60,19 @@ const _games = new Map<string, GameRegistration<unknown>>();
  */
 export function registerGame<TState>(
   gameType: string,
-  definition: GameDefinition<TState>,
-  hooks: GameHooks = {},
+  input: GameRegistrationInput<TState>,
 ): void {
+  const hooks = input.hooks ?? {};
   const orchestrator = new GameOrchestrator(
-    definition,
+    input.definition,
     hooks.turnOrder,
     hooks.doorGame,
   );
   _games.set(gameType, {
-    definition: definition as GameDefinition<unknown>,
+    definition: input.definition as GameDefinition<unknown>,
     orchestrator: orchestrator as GameOrchestrator<unknown>,
+    metadata: input.metadata,
+    adapter: input.adapter,
   });
 }
 

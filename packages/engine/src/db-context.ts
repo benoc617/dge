@@ -52,12 +52,20 @@ export function runOutsideTransaction<T>(fn: () => T): T {
   return txStore.exit(fn);
 }
 
-export class GalaxyBusyError extends Error {
-  constructor(message = "Galaxy busy — retry.") {
+/**
+ * Thrown when a session advisory lock cannot be acquired immediately.
+ * Routes should return HTTP 409 with `{ sessionBusy: true }` when this is caught.
+ * Named `SessionBusyError` — "galaxy" was SRX-specific terminology.
+ */
+export class SessionBusyError extends Error {
+  constructor(message = "Session busy — retry.") {
     super(message);
-    this.name = "GalaxyBusyError";
+    this.name = "SessionBusyError";
   }
 }
+
+/** @deprecated Use SessionBusyError. Kept for backward-compat during migration. */
+export const GalaxyBusyError = SessionBusyError;
 
 /**
  * Detect MySQL/MariaDB lock errors from NOWAIT (MySQL error 3572).
@@ -89,7 +97,7 @@ export async function withCommitLock<T>(sessionId: string, fn: () => Promise<T>)
           SELECT sessionId FROM SessionLock WHERE sessionId = ${sessionId} FOR UPDATE NOWAIT
         `;
       } catch (e) {
-        if (isMysqlLockError(e)) throw new GalaxyBusyError();
+        if (isMysqlLockError(e)) throw new SessionBusyError();
         throw e;
       }
       return txStore.run(tx, fn);

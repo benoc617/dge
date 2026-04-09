@@ -4,7 +4,10 @@
  * Scope:
  *   - Guard conditions (missing hooks, missing full-track methods)
  *   - Constructor and public surface (definition binding, orchestrator access)
- *   - Pure utility re-exports from engine (sessionCannotHaveActiveTurn, canPlayerAct)
+ *   - Pure utility re-exports from engine (sessionCannotHaveActiveTurn)
+ *
+ * Note: canPlayerAct is SRX-specific and lives in src/lib/door-game-turns.ts;
+ * its tests are in tests/unit/door-game-turns.test.ts.
  *
  * The full-track sequential and door-game action flows (processSequentialAction,
  * processDoorAction, processDoorTick) require a live DB and are covered by the
@@ -15,7 +18,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { GameOrchestrator, sessionCannotHaveActiveTurn, canPlayerAct } from "@dge/engine";
+import { GameOrchestrator, sessionCannotHaveActiveTurn } from "@dge/engine";
 import type { GameDefinition, ActionResult, Move, Rng } from "@dge/shared";
 import type { TurnOrderHooks } from "@dge/engine";
 
@@ -78,9 +81,12 @@ describe("GameOrchestrator.processSequentialTick — guard conditions", () => {
     await expect(orc.processSequentialTick("s", "p")).rejects.toThrow(/turnOrderHooks required/);
   });
 
-  it("throws when definition has no processFullTick method", async () => {
+  it("returns { report: null } when definition has no processFullTick (game has no tick)", async () => {
+    // Games like chess don't implement processFullTick; the orchestrator treats
+    // a missing tick as a no-op so routes return { alreadyProcessed: true }.
     const orc = new GameOrchestrator(makeDef(), stubHooks);
-    await expect(orc.processSequentialTick("s", "p")).rejects.toThrow(/processFullTick required/);
+    const result = await orc.processSequentialTick("s", "p");
+    expect(result).toEqual({ report: null });
   });
 });
 
@@ -134,25 +140,6 @@ describe("sessionCannotHaveActiveTurn", () => {
 
   it("false when game is active with a running turn clock", () => {
     expect(sessionCannotHaveActiveTurn({ waitingForHuman: false, turnStartedAt: new Date() })).toBe(false);
-  });
-});
-
-describe("canPlayerAct", () => {
-  it("true when fullTurnsUsedThisRound < actionsPerDay", () => {
-    expect(canPlayerAct({ fullTurnsUsedThisRound: 2, turnsLeft: 50 }, 5)).toBe(true);
-  });
-
-  it("false when fullTurnsUsedThisRound >= actionsPerDay", () => {
-    expect(canPlayerAct({ fullTurnsUsedThisRound: 5, turnsLeft: 50 }, 5)).toBe(false);
-    expect(canPlayerAct({ fullTurnsUsedThisRound: 6, turnsLeft: 50 }, 5)).toBe(false);
-  });
-
-  it("false when turnsLeft is 0 (game over)", () => {
-    expect(canPlayerAct({ fullTurnsUsedThisRound: 0, turnsLeft: 0 }, 5)).toBe(false);
-  });
-
-  it("true when turnsLeft > 0 and daily slot remains", () => {
-    expect(canPlayerAct({ fullTurnsUsedThisRound: 1, turnsLeft: 99 }, 5)).toBe(true);
   });
 });
 
