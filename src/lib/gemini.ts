@@ -9,12 +9,13 @@
  * public-API symbols that callers historically obtained from here.
  */
 
-import { PLANET_CONFIG, UNIT_COST } from "@/lib/game-constants";
 import { targetHasNewEmpireProtection } from "@/lib/empire-protection";
 import * as rng from "@/lib/rng";
-import { empireFromPrisma, makeRng, type PrismaEmpireShape } from "@/lib/sim-state";
+import {
+  empireFromPrisma, makeRng, generateCandidateMoves, pickRolloutMove,
+  type PrismaEmpireShape, type RolloutStrategy, type CandidateMove,
+} from "@/lib/sim-state";
 import { searchOpponentMoveAsync, buildSearchStates } from "@/lib/search-opponent";
-import { getAvailableTech } from "@/lib/research";
 import { withMctsDecide } from "@/lib/ai-concurrency";
 import { resolveDoorAiRuntimeSettings } from "@/lib/door-ai-runtime-settings";
 import {
@@ -314,189 +315,118 @@ async function mctsLocalFallback(
 }
 
 // ---------------------------------------------------------------------------
-// Heuristic fallback (all non-optimal personas)
+// Simulation-strategy fallback (all non-optimal personas)
 // ---------------------------------------------------------------------------
+
+/**
+ * Map an SRX AI persona string to one of the sim-state RolloutStrategy types.
+ * The sim strategies are simulation-tested; we reuse them here rather than
+ * maintaining a separate, untested heuristic.
+ */
+function personaToRolloutStrategy(persona: string): RolloutStrategy {
+  if (persona.includes("Warlord"))   return "military";
+  if (persona.includes("Turtle"))    return "supply";   // builds stations/defense via supply logic
+  if (persona.includes("Researcher"))return "research";
+  if (persona.includes("Spy"))       return "credit";   // credit / covert-agent heavy
+  if (persona.includes("Economist")) return "economy";
+  return "balanced"; // Diplomat, default
+}
 
 async function localFallback(
   state: EmpireState,
   persona: string,
   ctx: AIMoveContext,
 ): Promise<{ action: string; target?: string; amount?: number; reasoning: string; opType?: number; [key: string]: unknown }> {
+  // Optimal persona always uses MCTS (unchanged).
   if (persona.includes("Optimal") || persona.includes("optimal")) {
     const mctsResult = await mctsLocalFallback(state, 45_000);
     if (mctsResult) return mctsResult as { action: string; reasoning: string; [key: string]: unknown };
   }
 
   const s = state;
-  const planets = s?.planets ?? [];
   const army = s?.army;
-  const credits = s?.credits ?? 0;
-  const food = s?.food ?? 0;
-  const population = s?.population ?? 0;
-  const turnsPlayed = s?.turnsPlayed ?? 0;
-
   const rivalAttackTargets = (ctx.rivalAttackTargets ?? []).filter((n) => n !== ctx.commanderName);
+  const isWarlord   = persona.includes("Warlord");
+  const isSpy       = persona.includes("Spy");
 
-  const PC = PLANET_CONFIG;
-  const UC = UNIT_COST;
+  // Build PrismaEmpireShape so we can use generateCandidateMoves / pickRolloutMove
+  // (same conversion as mctsLocalFallback — missing fields filled with safe defaults).
+  const shape: PrismaEmpireShape = {
+    id: "ai-fallback",
+    credits:    s?.credits ?? 0,
+    food:       s?.food ?? 0,
+    ore:        s?.ore ?? 0,
+    fuel:       s?.fuel ?? 0,
+    population: s?.population ?? 0,
+    taxRate:    s?.taxRate ?? 25,
+    civilStatus:s?.civilStatus ?? 0,
+    netWorth:   s?.netWorth ?? 0,
+    turnsLeft:  s?.turnsLeft ?? 0,
+    turnsPlayed:s?.turnsPlayed ?? 0,
+    isProtected:s?.isProtected ?? false,
+    protectionTurns: s?.protectionTurns ?? 0,
+    foodSellRate:      s?.foodSellRate ?? 0,
+    oreSellRate:       s?.oreSellRate ?? 50,
+    petroleumSellRate: s?.petroleumSellRate ?? 50,
+    planets: (s?.planets ?? []).map((p) => ({
+      type: p.type,
+      shortTermProduction: p.shortTermProduction,
+      longTermProduction:  p.shortTermProduction,
+    })),
+    army: {
+      ...(army ?? {}),
+      soldiers:       army?.soldiers ?? 0,
+      generals:       army?.generals ?? 0,
+      fighters:       army?.fighters ?? 0,
+      defenseStations:army?.defenseStations ?? 0,
+      lightCruisers:  army?.lightCruisers ?? 0,
+      heavyCruisers:  army?.heavyCruisers ?? 0,
+      carriers:       army?.carriers ?? 0,
+      covertAgents:   army?.covertAgents ?? 0,
+      covertPoints:   army?.covertPoints ?? 0,
+      commandShipStrength: army?.commandShipStrength ?? 0,
+      effectiveness:  army?.effectiveness ?? 100,
+      soldiersLevel:       1,
+      fightersLevel:       1,
+      stationsLevel:       1,
+      lightCruisersLevel:  1,
+      heavyCruisersLevel:  1,
+    },
+    research: s?.research ?? { accumulatedPoints: 0, unlockedTechIds: [] },
+    supplyRates: null,
+    loans: 0,
+  };
+  const pureState = empireFromPrisma(shape, "ai-fallback");
 
-  const pCount: Record<string, number> = {};
-  for (const p of planets) pCount[p.type] = (pCount[p.type] || 0) + 1;
-  const totalPlanets = planets.length;
-  const foodPlanets = pCount["FOOD"] ?? 0;
-  const orePlanets = pCount["ORE"] ?? 0;
-  const urbanPlanets = pCount["URBAN"] ?? 0;
-  const govPlanets = pCount["GOVERNMENT"] ?? 0;
-  const supplyPlanets = pCount["SUPPLY"] ?? 0;
+  // Generate the candidate move set (economic, military, research — no rival detail).
+  const candidates: CandidateMove[] = generateCandidateMoves(pureState, []);
 
-  const isWarlord = persona.includes("Warlord");
-  const isTurtle = persona.includes("Turtle");
-  const isEcon = persona.includes("Economist");
-  const isSpy = persona.includes("Spy");
-  const isResearcher = persona.includes("Researcher");
-
-  if (turnsPlayed === 0 && s.foodSellRate === 0) {
-    return { action: "set_sell_rates", foodSellRate: 0, oreSellRate: 60, petroleumSellRate: 80, reasoning: "Set initial sell rates" };
+  // Inject attack/covert candidates for aggressive personas when rivals are available.
+  // We add one of each relevant type; pickRolloutMove's strategy scoring then decides
+  // whether they win against the economic candidates.
+  if (!s?.isProtected && rivalAttackTargets.length > 0 && army) {
+    const target = pickRivalOpponent(rivalAttackTargets);
+    if (army.generals >= 1) {
+      candidates.push({ action: "attack_conventional", params: { target }, label: `Attack ${target}` });
+      candidates.push({ action: "attack_guerrilla",    params: { target }, label: `Guerrilla ${target}` });
+    }
+    if (isSpy && army.covertAgents >= 1) {
+      candidates.push({ action: "covert_op", params: { target, opType: rng.randomInt(0, 4) }, label: `Covert op vs ${target}` });
+    }
+    if (isWarlord || isSpy) {
+      candidates.push({ action: "attack_pirates", params: {}, label: "Attack pirates" });
+    }
   }
 
-  if (food < 50 && credits >= PC.FOOD.baseCost) {
-    return { action: "buy_planet", type: "FOOD", reasoning: "Critical: food low" };
-  }
-  if (food < 0 && credits >= 100 * 80) {
-    return { action: "market_buy", resource: "food", amount: 100, reasoning: "Emergency food buy" };
-  }
+  // Select the best move using the persona's sim strategy.
+  const strategy = personaToRolloutStrategy(persona);
+  const best = pickRolloutMove(pureState, candidates, () => rng.random(), strategy);
 
-  if (rivalAttackTargets.length > 0 && !s.isProtected && army) {
-    if (isWarlord && turnsPlayed >= 6 && (army.generals ?? 0) >= 1 && rng.random() < 0.2) {
-      return { action: "attack_conventional", target: pickRivalOpponent(rivalAttackTargets), reasoning: "Press rival empires" };
-    }
-    if (isSpy && turnsPlayed >= 8 && (army.covertAgents ?? 0) >= 1 && rng.random() < 0.25) {
-      return { action: "covert_op", target: pickRivalOpponent(rivalAttackTargets), opType: rng.random() < 0.5 ? 0 : 1, reasoning: "Covert ops vs rival" };
-    }
-    if (isWarlord && turnsPlayed >= 5 && rng.random() < 0.14) {
-      return { action: "attack_pirates", reasoning: "Raid pirates for income" };
-    }
-  }
-
-  if (turnsPlayed < 20) {
-    if (foodPlanets < 3 && credits >= PC.FOOD.baseCost) return { action: "buy_planet", type: "FOOD", reasoning: "Need more food early" };
-    if (isResearcher && (pCount["RESEARCH"] ?? 0) < 2 && credits >= PC.RESEARCH.baseCost) {
-      return { action: "buy_planet", type: "RESEARCH", reasoning: "Build research capacity" };
-    }
-    if (urbanPlanets < 3 && credits >= PC.URBAN.baseCost) return { action: "buy_planet", type: "URBAN", reasoning: "Grow population capacity" };
-    if (orePlanets < 3 && credits >= PC.ORE.baseCost) return { action: "buy_planet", type: "ORE", reasoning: "Need ore for units" };
-    if (govPlanets < 2 && credits >= PC.GOVERNMENT.baseCost) return { action: "buy_planet", type: "GOVERNMENT", reasoning: "Need government for generals" };
-    if (isEcon && credits >= PC.TOURISM.baseCost) return { action: "buy_planet", type: "TOURISM", reasoning: "Tourism income" };
-    if (credits >= UC.SOLDIER * 10) {
-      const amt = Math.min(Math.floor(credits * 0.4 / UC.SOLDIER), 50);
-      if (amt > 0) return { action: "buy_soldiers", amount: amt, reasoning: "Build early defense" };
-    }
-    return { action: "end_turn", reasoning: "Saving credits" };
-  }
-
-  if (population > urbanPlanets * 18000 && credits >= PC.URBAN.baseCost) {
-    return { action: "buy_planet", type: "URBAN", reasoning: "Population nearing cap" };
-  }
-
-  if (isWarlord) {
-    if (rivalAttackTargets.length > 0 && !s.isProtected && army && (army.generals ?? 0) >= 1) {
-      if (rng.random() < 0.38) return { action: "attack_conventional", target: pickRivalOpponent(rivalAttackTargets), reasoning: "Conventional invasion" };
-      if (rng.random() < 0.14) return { action: "attack_guerrilla", target: pickRivalOpponent(rivalAttackTargets), reasoning: "Guerrilla harassment" };
-      if (rng.random() < 0.12) return { action: "attack_pirates", reasoning: "Pirate raid" };
-    }
-    if (govPlanets < 2 && credits >= PC.GOVERNMENT.baseCost) return { action: "buy_planet", type: "GOVERNMENT", reasoning: "Need generals" };
-    if (army && army.generals < 2 && govPlanets > 0 && credits >= UC.GENERAL * 2) return { action: "buy_generals", amount: 2, reasoning: "Need generals to attack" };
-    if (army && army.soldiers < 200 && credits >= UC.SOLDIER * 30) return { action: "buy_soldiers", amount: Math.min(30, Math.floor(credits / UC.SOLDIER)), reasoning: "Build army" };
-    if (army && army.fighters < 50 && credits >= UC.FIGHTER * 15) return { action: "buy_fighters", amount: Math.min(15, Math.floor(credits / UC.FIGHTER)), reasoning: "Build fighters" };
-    if (credits >= UC.LIGHT_CRUISER * 10) return { action: "buy_light_cruisers", amount: Math.min(10, Math.floor(credits / UC.LIGHT_CRUISER)), reasoning: "Light cruisers for fleet" };
-    if (credits >= UC.HEAVY_CRUISER * 5) return { action: "buy_heavy_cruisers", amount: Math.min(5, Math.floor(credits / UC.HEAVY_CRUISER)), reasoning: "Heavy cruisers for space" };
-    if (supplyPlanets < 1 && credits >= PC.SUPPLY.baseCost) return { action: "buy_planet", type: "SUPPLY", reasoning: "Auto-produce military" };
-    if (foodPlanets < totalPlanets * 0.2 && credits >= PC.FOOD.baseCost) return { action: "buy_planet", type: "FOOD", reasoning: "Need food for army" };
-    return { action: "buy_soldiers", amount: Math.max(1, Math.min(20, Math.floor(credits / UC.SOLDIER))), reasoning: "More soldiers" };
-  }
-
-  if (isTurtle) {
-    if (credits >= UC.DEFENSE_STATION * 10 && army && army.defenseStations < 80) return { action: "buy_stations", amount: Math.min(10, Math.floor(credits / UC.DEFENSE_STATION)), reasoning: "Fortify defenses" };
-    if (credits >= UC.FIGHTER * 10 && army && army.fighters < 60) return { action: "buy_fighters", amount: Math.min(10, Math.floor(credits / UC.FIGHTER)), reasoning: "Defensive fleet" };
-    if (credits >= UC.LIGHT_CRUISER * 5) return { action: "buy_light_cruisers", amount: Math.min(5, Math.floor(credits / UC.LIGHT_CRUISER)), reasoning: "Light cruiser defense" };
-    if (foodPlanets < totalPlanets * 0.25 && credits >= PC.FOOD.baseCost) return { action: "buy_planet", type: "FOOD", reasoning: "Secure food supply" };
-    if (credits >= PC.ORE.baseCost) return { action: "buy_planet", type: "ORE", reasoning: "Feed the military machine" };
-    return { action: "end_turn", reasoning: "Holding steady" };
-  }
-
-  if (isResearcher) {
-    const researchPlanets = pCount["RESEARCH"] ?? 0;
-    const resPoints = state.research?.accumulatedPoints ?? 0;
-    if (researchPlanets < 3 && credits >= PC.RESEARCH.baseCost) {
-      return { action: "buy_planet", type: "RESEARCH", reasoning: "Expand research network" };
-    }
-    if (resPoints > 0) {
-      const avail = getAvailableTech(state.research?.unlockedTechIds ?? []);
-      const affordable = avail.filter((t) => t.cost <= resPoints);
-      if (affordable.length > 0) {
-        const pick = affordable.reduce((a, b) => a.cost < b.cost ? a : b);
-        return { action: "discover_tech", techId: pick.id, reasoning: `Research ${pick.id} for tech advantage` };
-      }
-    }
-    if (govPlanets < 2 && credits >= PC.GOVERNMENT.baseCost) {
-      return { action: "buy_planet", type: "GOVERNMENT", reasoning: "Maintenance savings + agent capacity" };
-    }
-    if (foodPlanets < 3 && credits >= PC.FOOD.baseCost) {
-      return { action: "buy_planet", type: "FOOD", reasoning: "Feed the empire" };
-    }
-    if (army && (army.generals ?? 0) >= 1 && rng.random() < 0.18) {
-      return { action: "attack_pirates", reasoning: "Pirate income funding research" };
-    }
-    if (army && army.soldiers < 100 && credits >= UC.SOLDIER * 20) {
-      return { action: "buy_soldiers", amount: 20, reasoning: "Minimal defense" };
-    }
-    if (credits >= PC.RESEARCH.baseCost) {
-      return { action: "buy_planet", type: "RESEARCH", reasoning: "More research output" };
-    }
-    return { action: "end_turn", reasoning: "Accumulating research points" };
-  }
-
-  if (isSpy) {
-    if (rivalAttackTargets.length > 0 && army && (army.covertAgents ?? 0) >= 1 && rng.random() < 0.32) {
-      return { action: "covert_op", target: pickRivalOpponent(rivalAttackTargets), opType: rng.randomInt(0, 4), reasoning: "Sustained covert pressure" };
-    }
-    if (rivalAttackTargets.length > 0 && !s.isProtected && army && (army.generals ?? 0) >= 1 && (army.soldiers ?? 0) >= 120 && rng.random() < 0.2) {
-      return { action: "attack_conventional", target: pickRivalOpponent(rivalAttackTargets), reasoning: "Strike after intelligence" };
-    }
-    if (govPlanets < 3 && credits >= PC.GOVERNMENT.baseCost) return { action: "buy_planet", type: "GOVERNMENT", reasoning: "House covert agents" };
-    if (army && army.covertAgents < govPlanets * 200 && credits >= UC.COVERT_AGENT * 3) return { action: "buy_covert_agents", amount: Math.min(3, Math.floor(credits / UC.COVERT_AGENT)), reasoning: "Expand spy network" };
-    if (credits >= UC.SOLDIER * 20 && army && army.soldiers < 150) return { action: "buy_soldiers", amount: Math.min(20, Math.floor(credits / UC.SOLDIER)), reasoning: "Need ground troops" };
-    if (foodPlanets < 3 && credits >= PC.FOOD.baseCost) return { action: "buy_planet", type: "FOOD", reasoning: "Feed empire" };
-    if (credits >= PC.URBAN.baseCost) return { action: "buy_planet", type: "URBAN", reasoning: "Grow population" };
-    return { action: "end_turn", reasoning: "Planning operations" };
-  }
-
-  // Economist / diplomat / default
-  if (totalPlanets < 15) {
-    const needs: [boolean, string][] = [
-      [foodPlanets < totalPlanets * 0.2, "FOOD"],
-      [urbanPlanets < 4, "URBAN"],
-      [orePlanets < 3, "ORE"],
-      [!pCount["TOURISM"], "TOURISM"],
-      [(pCount["PETROLEUM"] ?? 0) < 2, "PETROLEUM"],
-    ];
-    const need = needs.find(([flag]) => flag);
-    if (need) {
-      const cost = PC[need[1] as keyof typeof PC]?.baseCost ?? 14000;
-      if (credits >= cost) return { action: "buy_planet", type: need[1], reasoning: `Expand: need ${need[1]}` };
-    }
-    if (credits >= PC.TOURISM.baseCost) return { action: "buy_planet", type: "TOURISM", reasoning: "More tourism income" };
-  }
-
-  if (army && army.soldiers < 100 && credits >= UC.SOLDIER * 15) {
-    return { action: "buy_soldiers", amount: Math.min(15, Math.floor(credits / UC.SOLDIER)), reasoning: "Minimum defense" };
-  }
-  if (army && army.fighters < 30 && credits >= UC.FIGHTER * 10) {
-    return { action: "buy_fighters", amount: Math.min(10, Math.floor(credits / UC.FIGHTER)), reasoning: "Fleet defense" };
-  }
-
-  if (credits >= 50000) return { action: "buy_bond", amount: Math.min(credits - 10000, 50000), reasoning: "Invest surplus" };
-  return { action: "end_turn", reasoning: "Conserving resources" };
+  return {
+    action: best.action,
+    ...best.params,
+    reasoning: `${strategy} strategy: ${best.label}`,
+  };
 }
 
 // ---------------------------------------------------------------------------

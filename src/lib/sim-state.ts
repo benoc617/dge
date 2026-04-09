@@ -1141,9 +1141,10 @@ export function pickRolloutMove(
   s: PureEmpireState,
   candidates: CandidateMove[],
   rng: () => number,
+  overrideStrategy?: RolloutStrategy,
 ): CandidateMove {
   if (candidates.length === 1) return candidates[0];
-  const strategy = inferRolloutStrategy(s);
+  const strategy = overrideStrategy ?? inferRolloutStrategy(s);
 
   // Over-extension: fewer than 5 turns of planet maintenance in reserve, OR in net deficit.
   const maintPerTurn = s.planets.length * (MAINT.PLANET_BASE + MAINT.PLANET_PER_TURN * s.turnsPlayed);
