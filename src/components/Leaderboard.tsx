@@ -20,6 +20,8 @@ export interface RivalEntry {
 
 interface Props {
   currentPlayer: string;
+  /** Player ID — used to scope leaderboard to the correct session (avoids name collisions). */
+  playerId?: string | null;
   /** Bumped after meaningful game state changes. Triggers a leaderboard refresh (debounced). */
   refreshKey: number;
   onSelectTarget: (name: string) => void;
@@ -29,7 +31,7 @@ interface Props {
 const POLL_INTERVAL_MS = 10_000;
 const DEBOUNCE_MS = 2_000;
 
-export default function Leaderboard({ currentPlayer, refreshKey, onSelectTarget, onRivalsLoaded }: Props) {
+export default function Leaderboard({ currentPlayer, playerId, refreshKey, onSelectTarget, onRivalsLoaded }: Props) {
   const [rivals, setRivals] = useState<RivalEntry[]>([]);
   const [expanded, setExpanded] = useState(true);
   const lastFetchRef = useRef(0);
@@ -38,7 +40,10 @@ export default function Leaderboard({ currentPlayer, refreshKey, onSelectTarget,
   const fetchLeaderboard = useCallback(async () => {
     lastFetchRef.current = Date.now();
     try {
-      const res = await fetch(`/api/game/leaderboard?player=${encodeURIComponent(currentPlayer)}`);
+      const query = playerId
+        ? `id=${encodeURIComponent(playerId)}`
+        : `player=${encodeURIComponent(currentPlayer)}`;
+      const res = await fetch(`/api/game/leaderboard?${query}`);
       if (res.ok) {
         const data = await res.json();
         const list: RivalEntry[] = data.leaderboard ?? [];
@@ -48,7 +53,7 @@ export default function Leaderboard({ currentPlayer, refreshKey, onSelectTarget,
     } catch (err) {
       console.warn("[leaderboard] fetch failed:", err);
     }
-  }, [currentPlayer, onRivalsLoaded]);
+  }, [currentPlayer, playerId, onRivalsLoaded]);
 
   // Fetch on mount
   useEffect(() => {

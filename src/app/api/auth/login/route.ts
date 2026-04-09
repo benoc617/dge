@@ -36,7 +36,10 @@ export async function POST(req: NextRequest) {
     where: {
       userId: account.id,
       isAI: false,
-      empire: { turnsLeft: { gt: 0 } },
+      OR: [
+        { empire: { turnsLeft: { gt: 0 } } },
+        { empire: null },
+      ],
     },
     include: { empire: true, gameSession: true },
     orderBy: { updatedAt: "desc" },

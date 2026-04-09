@@ -80,11 +80,27 @@ export async function doAction(playerName: string, action: string, params?: Reco
   });
 }
 
+/** Like doAction but uses playerId for unambiguous dispatch (avoids cross-game name collisions). */
+export async function doActionById(playerId: string, playerName: string, action: string, params?: Record<string, unknown>) {
+  return api("/api/game/action", {
+    method: "POST",
+    body: JSON.stringify({ playerId, playerName, action, ...params }),
+  });
+}
+
 /** Run the turn tick for the current player (situation report). Idempotent if already processed. */
 export async function doTick(playerName: string) {
   return api("/api/game/tick", {
     method: "POST",
     body: JSON.stringify({ playerName }),
+  });
+}
+
+/** Like doTick but uses playerId for unambiguous dispatch. */
+export async function doTickById(playerId: string, playerName: string) {
+  return api("/api/game/tick", {
+    method: "POST",
+    body: JSON.stringify({ playerId, playerName }),
   });
 }
 
@@ -172,6 +188,11 @@ export async function getGameLog(playerName?: string) {
 export async function getLeaderboard(playerName?: string) {
   const q = playerName ? `?player=${encodeURIComponent(playerName)}` : "";
   return api(`/api/game/leaderboard${q}`);
+}
+
+/** Like getLeaderboard but uses playerId for unambiguous session scoping. */
+export async function getLeaderboardById(playerId: string) {
+  return api(`/api/game/leaderboard?id=${encodeURIComponent(playerId)}`);
 }
 
 export async function getHighscores() {

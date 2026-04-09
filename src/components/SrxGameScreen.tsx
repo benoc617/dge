@@ -208,7 +208,7 @@ export function SrxGameScreen({
       const res = await apiFetch("/api/game/tick", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ playerName }),
+        body: JSON.stringify({ playerName, playerId: sessionPlayerId }),
       });
       if (!res.ok) { setTickFired(false); return; }
       await refreshState(playerName, sessionPlayerId);
@@ -223,7 +223,7 @@ export function SrxGameScreen({
         await apiFetch("/api/game/tick", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ playerName }),
+          body: JSON.stringify({ playerName, playerId: sessionPlayerId }),
         });
         await refreshState(playerName, sessionPlayerId);
       } catch {
@@ -243,7 +243,7 @@ export function SrxGameScreen({
       res = await apiFetch("/api/game/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ playerName, action, ...params }),
+        body: JSON.stringify({ playerName, playerId: sessionPlayerId, action, ...params }),
       });
     } catch {
       const msg = "Network error — could not reach the server.";
@@ -436,7 +436,7 @@ export function SrxGameScreen({
         const res = await apiFetch("/api/game/tick", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ playerName }),
+          body: JSON.stringify({ playerName, playerId: sessionPlayerId }),
         });
         const tTickFetched = performance.now();
         let data: { turnReport?: unknown; turnOpened?: boolean; alreadyProcessed?: boolean };
@@ -708,6 +708,7 @@ export function SrxGameScreen({
       <div className="mb-1 shrink-0">
         <Leaderboard
           currentPlayer={playerName}
+          playerId={sessionPlayerId}
           refreshKey={refreshKey}
           onSelectTarget={setTargetName}
           onRivalsLoaded={setRivalNames}

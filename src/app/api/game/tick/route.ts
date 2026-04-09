@@ -9,19 +9,23 @@ import "@/lib/game-bootstrap"; // ensure all games are registered before any dis
 
 export async function POST(req: NextRequest) {
   const tRoute = performance.now();
-  const { playerName } = await req.json();
+  const body = await req.json();
+  const { playerName, playerId: bodyPlayerId } = body;
 
-  if (!playerName) {
-    return NextResponse.json({ error: "playerName required" }, { status: 400 });
+  if (!playerName && !bodyPlayerId) {
+    return NextResponse.json({ error: "playerName (or playerId) required" }, { status: 400 });
   }
 
-  // Find human player by name — no empire filter (chess players have no empire).
-  // SRX game-over check happens below after determining game type.
-  const player = await prisma.player.findFirst({
-    where: { name: playerName, isAI: false },
-    orderBy: { createdAt: "desc" },
-    include: { empire: true },
-  });
+  const player = bodyPlayerId
+    ? await prisma.player.findUnique({
+        where: { id: bodyPlayerId },
+        include: { empire: true },
+      })
+    : await prisma.player.findFirst({
+        where: { name: playerName, isAI: false },
+        orderBy: { createdAt: "desc" },
+        include: { empire: true },
+      });
   if (!player) {
     return NextResponse.json({ error: "Player not found" }, { status: 404 });
   }
