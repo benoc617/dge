@@ -376,10 +376,8 @@ export default function Home() {
         body: JSON.stringify({ gameSessionId: newSessionId, count: aiCount }),
       });
       if (resAi.ok) {
-        const aiData = await resAi.json() as { created?: { name: string }[] };
-        const names: string[] = Array.isArray(aiData.created)
-          ? aiData.created.map((p) => p.name)
-          : [];
+        const aiData = await resAi.json() as { created?: string[] };
+        const names: string[] = Array.isArray(aiData.created) ? aiData.created : [];
         for (const n of names) events.push(`[T${events.length + 1}] AI Commander ${n} has entered the galaxy.`);
       } else {
         setError((await resAi.json() as { error?: string }).error ?? "AI setup failed");

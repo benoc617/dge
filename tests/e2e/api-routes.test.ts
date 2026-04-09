@@ -77,10 +77,10 @@ describe("E2E: auxiliary API routes", () => {
       body: JSON.stringify({ gameSessionId: sessionId, count: 2 }),
     });
     expect(status).toBe(200);
-    const d = data as { created: { name: string }[]; message: string };
+    const d = data as { created: string[]; message: string };
     expect(Array.isArray(d.created)).toBe(true);
     expect(d.created).toHaveLength(2);
-    expect(typeof d.created[0].name).toBe("string");
+    expect(typeof d.created[0]).toBe("string");
   });
 
   it("POST /api/ai/run-all requires gameSessionId", async () => {
