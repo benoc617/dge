@@ -12,6 +12,9 @@ import {
   api,
   postGameOver,
   runAI,
+  getLobbies,
+  getSession,
+  getStatus,
   scheduleTestGalaxyDeletion,
   deleteTestGalaxySession,
   TEST_PASSWORD,
@@ -51,6 +54,33 @@ describe("E2E: auxiliary API routes", () => {
     expect(d.gameOver).toBe(true);
     expect(Array.isArray(d.standings)).toBe(true);
     expect(d.winner).toBeTruthy();
+  });
+
+  it("POST /api/ai/setup requires gameSessionId", async () => {
+    const { status, data } = await api("/api/ai/setup", { method: "POST", body: JSON.stringify({ count: 1 }) });
+    expect(status).toBe(400);
+    expect((data as { error?: string }).error).toMatch(/gameSessionId/i);
+  });
+
+  it("POST /api/ai/setup with count (UI path) creates AI players", async () => {
+    const name = uniqueName("AiSetupUI");
+    const { status: regStatus, data: reg } = await register(name, TEST_PASSWORD, {
+      galaxyName: uniqueGalaxy("AiSetupGal"),
+    });
+    expect(regStatus).toBe(201);
+    const sessionId = (reg as { gameSessionId?: string }).gameSessionId!;
+    scheduleTestGalaxyDeletion(sessionId);
+
+    // Simulate exactly what page.tsx sends: { gameSessionId, count } (not names).
+    const { status, data } = await api("/api/ai/setup", {
+      method: "POST",
+      body: JSON.stringify({ gameSessionId: sessionId, count: 2 }),
+    });
+    expect(status).toBe(200);
+    const d = data as { created: { name: string }[]; message: string };
+    expect(Array.isArray(d.created)).toBe(true);
+    expect(d.created).toHaveLength(2);
+    expect(typeof d.created[0].name).toBe("string");
   });
 
   it("POST /api/ai/run-all requires gameSessionId", async () => {
@@ -96,6 +126,66 @@ describe("E2E: auxiliary API routes", () => {
   it("GET /api/game/messages 404 for unknown player", async () => {
     const { status } = await getMessages(`NoSuchPlayer_${Date.now()}`);
     expect(status).toBe(404);
+  });
+
+  describe("game field in API responses", () => {
+    const creatorName = uniqueName("GameFld");
+    const joinerName = uniqueName("GameFldJ");
+    const password = TEST_PASSWORD;
+    let sessionId: string;
+    let inviteCode: string;
+    let playerId: string;
+
+    beforeAll(async () => {
+      const { status, data } = await register(creatorName, password, {
+        galaxyName: uniqueGalaxy("GameFldGal"),
+        isPublic: true,
+      });
+      expect(status).toBe(201);
+      const reg = data as { gameSessionId: string; inviteCode: string; id: string };
+      sessionId = reg.gameSessionId;
+      inviteCode = reg.inviteCode;
+      playerId = reg.id;
+    });
+
+    afterAll(async () => {
+      await deleteTestGalaxySession(sessionId);
+    });
+
+    it("POST /api/game/register response includes game: srx", async () => {
+      const { data } = await register(uniqueName("Tmp"), password, {
+        galaxyName: uniqueGalaxy("TmpGal"),
+      });
+      scheduleTestGalaxyDeletion((data as { gameSessionId?: string }).gameSessionId);
+      expect((data as { game?: string }).game).toBe("srx");
+    });
+
+    it("POST /api/game/join response includes game: srx", async () => {
+      const { status, data } = await joinGame(joinerName, password, { inviteCode });
+      expect(status).toBe(201);
+      expect((data as { game?: string }).game).toBe("srx");
+    });
+
+    it("GET /api/game/status response includes game: srx", async () => {
+      const { status, data } = await getStatus(playerId);
+      expect(status).toBe(200);
+      expect((data as { game?: string }).game).toBe("srx");
+    });
+
+    it("GET /api/game/lobbies items include game: srx", async () => {
+      const { status, data } = await getLobbies();
+      expect(status).toBe(200);
+      const items = data as { galaxyName: string; game?: string }[];
+      const found = items.find((l) => l.galaxyName.startsWith("GameFldGal"));
+      expect(found).toBeDefined();
+      expect(found!.game).toBe("srx");
+    });
+
+    it("GET /api/game/session response includes game: srx", async () => {
+      const { status, data } = await getSession(sessionId);
+      expect(status).toBe(200);
+      expect((data as { game?: string }).game).toBe("srx");
+    });
   });
 
   describe("session-scoped messaging", () => {
