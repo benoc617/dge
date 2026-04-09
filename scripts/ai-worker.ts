@@ -30,6 +30,7 @@ import {
   failJob,
   recoverStaleJobs,
   enqueueAiTurnsForSession,
+  MAX_JOB_RETRIES,
 } from "../src/lib/ai-job-queue";
 import { runOneDoorGameAI } from "../src/lib/door-game-turns";
 import { resolveDoorAiRuntimeSettings } from "../src/lib/door-ai-runtime-settings";
@@ -43,9 +44,20 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function processJob(jobId: string, sessionId: string, playerId: string): Promise<void> {
+async function processJob(
+  jobId: string,
+  sessionId: string,
+  playerId: string,
+  retryCount: number,
+): Promise<void> {
   const t0 = Date.now();
-  console.log(`[ai-worker] ${WORKER_ID.slice(0, 8)} job=${jobId.slice(0, 8)} player=${playerId.slice(0, 8)} session=${sessionId.slice(0, 8)} starting`);
+  const prefix = `[ai-worker] ${WORKER_ID.slice(0, 8)} job=${jobId.slice(0, 8)} player=${playerId.slice(0, 8)} session=${sessionId.slice(0, 8)}`;
+
+  if (retryCount > 0) {
+    console.warn(`${prefix} starting (retry ${retryCount}/${MAX_JOB_RETRIES - 1})`);
+  } else {
+    console.log(`${prefix} starting`);
+  }
 
   try {
     // Run the AI's full turn; scheduleAiDrain:false prevents re-enqueueing inside closeFullTurn.
@@ -60,12 +72,25 @@ async function processJob(jobId: string, sessionId: string, playerId: string): P
     // Cascade: enqueue jobs for any AIs that still owe turns (new day rolled, or multi-AI session).
     const enqueued = await enqueueAiTurnsForSession(sessionId);
 
-    console.log(`[ai-worker] ${WORKER_ID.slice(0, 8)} job=${jobId.slice(0, 8)} done ms=${ms} cascaded=${enqueued}`);
+    console.log(`${prefix} done ms=${ms} cascaded=${enqueued}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const ms = Date.now() - t0;
-    console.error(`[ai-worker] ${WORKER_ID.slice(0, 8)} job=${jobId.slice(0, 8)} failed ms=${ms} err=${msg}`);
+    console.error(`${prefix} failed ms=${ms} err=${msg}`);
     await failJob(jobId, msg);
+
+    // Bug fix: re-enqueue so the AI's daily slot is not silently lost. Without
+    // this, a runtime exception (e.g. transient DB error, invalid action path)
+    // leaves the player with no pending/claimed job and no mechanism to retry
+    // until the next human action or status poll triggers enqueueAiTurnsForSession.
+    try {
+      const requeued = await enqueueAiTurnsForSession(sessionId);
+      if (requeued > 0) {
+        console.warn(`${prefix} re-enqueued ${requeued} job(s) after failure`);
+      }
+    } catch (enqErr) {
+      console.error(`${prefix} re-enqueue after failure also failed:`, enqErr);
+    }
   }
 }
 
@@ -88,7 +113,7 @@ async function runSlot(slotId: number): Promise<never> {
         await sleep(POLL_INTERVAL_MS);
         continue;
       }
-      await processJob(job.id, job.sessionId, job.playerId);
+      await processJob(job.id, job.sessionId, job.playerId, job.retryCount);
     } catch (err) {
       console.error(`${prefix} error:`, err);
       await sleep(POLL_INTERVAL_MS);
@@ -103,12 +128,24 @@ async function runWorker(): Promise<void> {
   );
 
   // Stale job recovery loop — runs independently of worker slots.
+  // Resets claimed-but-never-completed jobs (e.g. from OOM crashes) back to pending.
+  // Jobs that have crashed MAX_JOB_RETRIES times are permanently failed to break
+  // infinite crash loops, and their sessions are immediately re-enqueued so the
+  // AI still gets another chance via a fresh job.
   (async function staleRecoveryLoop() {
     while (true) {
       try {
-        const recovered = await recoverStaleJobs(STALE_THRESHOLD_MS);
+        const { recovered, permanentlyFailed } = await recoverStaleJobs(STALE_THRESHOLD_MS);
         if (recovered > 0) {
           console.log(`[ai-worker] recovered ${recovered} stale jobs`);
+        }
+        for (const sessionId of permanentlyFailed) {
+          console.error(`[ai-worker] job for session ${sessionId.slice(0, 8)} permanently failed after ${MAX_JOB_RETRIES} retries — re-enqueueing fresh job`);
+          try {
+            await enqueueAiTurnsForSession(sessionId);
+          } catch (enqErr) {
+            console.error(`[ai-worker] re-enqueue for permanently failed session ${sessionId.slice(0, 8)} failed:`, enqErr);
+          }
         }
       } catch (err) {
         console.error("[ai-worker] stale recovery error:", err);

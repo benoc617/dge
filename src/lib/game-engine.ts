@@ -1,4 +1,4 @@
-import { getDb } from "./db-context";
+import { getDb, withAtomicWrites } from "./db-context";
 import type { Empire, Planet, Army, SupplyRates, Market, PlanetType } from "@prisma/client";
 import { toEmpireUpdateData } from "./empire-prisma";
 import * as rng from "./rng";
@@ -852,30 +852,33 @@ export async function runEndgameSettlementTick(playerId: string): Promise<TurnRe
 
   await applyPostActionEconomyFinance(empire.id, tick, empire.planets, empire.research ?? null);
 
-  await getDb().empire.update({
-    where: { id: empire.id },
-    data: { ...toEmpireUpdateData(tick.updatedEmpire), tickProcessed: true },
-  });
-  await getDb().army.update({
-    where: { id: army.id },
-    data: tick.updatedArmy,
-  });
-  for (const pu of tick.updatedPlanets) {
-    await getDb().planet.update({
-      where: { id: pu.id },
-      data: { shortTermProduction: pu.shortTermProduction },
+  // Atomic commit: empire + army + planets + TurnLog written together so a
+  // mid-write failure cannot produce an empire state change with no TurnLog.
+  await withAtomicWrites(async () => {
+    await getDb().empire.update({
+      where: { id: empire.id },
+      data: { ...toEmpireUpdateData(tick.updatedEmpire), tickProcessed: true },
     });
-  }
-
-  await getDb().turnLog.create({
-    data: {
-      playerId,
-      action: "endgame_settlement",
-      details: {
-        actionMsg: "Endgame economy settlement (applies one full tick from post–final-action state).",
-        report: tick.report,
-      } as object,
-    },
+    await getDb().army.update({
+      where: { id: army.id },
+      data: tick.updatedArmy,
+    });
+    for (const pu of tick.updatedPlanets) {
+      await getDb().planet.update({
+        where: { id: pu.id },
+        data: { shortTermProduction: pu.shortTermProduction },
+      });
+    }
+    await getDb().turnLog.create({
+      data: {
+        playerId,
+        action: "endgame_settlement",
+        details: {
+          actionMsg: "Endgame economy settlement (applies one full tick from post–final-action state).",
+          report: tick.report,
+        } as object,
+      },
+    });
   });
 
   return tick.report;
@@ -2116,39 +2119,42 @@ export async function processAction(
 
   await applyPostActionEconomyFinance(empire.id, tick, planets, player.empire.research ?? null);
 
-  // Persist all changes + reset tickProcessed for next turn (unless door-game mid-turn)
-  await getDb().empire.update({
-    where: { id: empire.id },
-    data: { ...toEmpireUpdateData(tick.updatedEmpire), tickProcessed: options?.keepTickProcessed ? true : false },
-  });
-
-  await getDb().army.update({
-    where: { id: army.id },
-    data: tick.updatedArmy,
-  });
-
-  // Update planet production drifts (only if tick ran inline)
-  for (const pu of tick.updatedPlanets) {
-    await getDb().planet.update({
-      where: { id: pu.id },
-      data: { shortTermProduction: pu.shortTermProduction },
+  // Atomic commit: persist all final state changes + TurnLog together so a
+  // mid-write failure cannot produce empire state changes with no TurnLog record.
+  // withAtomicWrites is a no-op when already inside a withCommitLock transaction
+  // (door-game path); it opens a short transaction otherwise (sequential path).
+  await withAtomicWrites(async () => {
+    await getDb().empire.update({
+      where: { id: empire.id },
+      data: { ...toEmpireUpdateData(tick.updatedEmpire), tickProcessed: options?.keepTickProcessed ? true : false },
     });
-  }
 
-  // Log action
-  await getDb().turnLog.create({
-    data: {
-      playerId,
-      action,
-      details: {
-        params,
-        actionMsg,
-        ...(tickAlreadyPersisted
-          ? { tickReportDeferred: true }
-          : { report: tick.report }),
-        ...(options?.logMeta ?? {}),
-      } as object,
-    },
+    await getDb().army.update({
+      where: { id: army.id },
+      data: tick.updatedArmy,
+    });
+
+    for (const pu of tick.updatedPlanets) {
+      await getDb().planet.update({
+        where: { id: pu.id },
+        data: { shortTermProduction: pu.shortTermProduction },
+      });
+    }
+
+    await getDb().turnLog.create({
+      data: {
+        playerId,
+        action,
+        details: {
+          params,
+          actionMsg,
+          ...(tickAlreadyPersisted
+            ? { tickReportDeferred: true }
+            : { report: tick.report }),
+          ...(options?.logMeta ?? {}),
+        } as object,
+      },
+    });
   });
 
   if (

@@ -53,6 +53,26 @@ export function runOutsideTransaction<T>(fn: () => T): T {
 }
 
 /**
+ * Run fn atomically: if already inside a withCommitLock transaction, run fn
+ * directly (writes already share that transaction). Otherwise start a short
+ * transaction so all writes in fn are committed together or not at all.
+ *
+ * Use this to protect groups of sequential getDb() writes — e.g. empire update
+ * + army update + TurnLog create — from partial-write inconsistency when no
+ * advisory session lock is held (sequential-mode AI turns, endgame settlement).
+ */
+export async function withAtomicWrites<T>(fn: () => Promise<T>): Promise<T> {
+  if (txStore.getStore() !== undefined) {
+    // Already inside a withCommitLock transaction — fn's getDb() calls share it.
+    return fn();
+  }
+  return getPrisma().$transaction(
+    async (tx) => txStore.run(tx, fn),
+    { timeout: 10_000 },
+  );
+}
+
+/**
  * Thrown when a session advisory lock cannot be acquired immediately.
  * Routes should return HTTP 409 with `{ sessionBusy: true }` when this is caught.
  * Named `SessionBusyError` — "galaxy" was SRX-specific terminology.

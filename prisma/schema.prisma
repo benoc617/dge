@@ -386,6 +386,9 @@ model AiTurnJob {
   completedAt DateTime?
   /** { success, ms } on done; { error } on failed. */
   result      Json?
+  /** How many times this job has been reset from claimed→pending by stale recovery.
+      When this reaches MAX_JOB_RETRIES the job is permanently failed instead of retried. */
+  retryCount  Int       @default(0)
   createdAt   DateTime  @default(now())
 
   @@index([status, createdAt])

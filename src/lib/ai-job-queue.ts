@@ -11,7 +11,11 @@ export interface AiJob {
   id: string;
   sessionId: string;
   playerId: string;
+  retryCount: number;
 }
+
+/** Jobs with retryCount at or above this threshold are permanently failed by stale recovery. */
+export const MAX_JOB_RETRIES = 3;
 
 /**
  * Insert pending AI turn jobs for every AI player in a door-game session that:
@@ -67,8 +71,8 @@ export async function enqueueAiTurnsForSession(sessionId: string): Promise<numbe
  */
 export async function claimNextJob(workerId: string): Promise<AiJob | null> {
   return prisma.$transaction(async (tx) => {
-    const rows = await tx.$queryRaw<{ id: string; sessionId: string; playerId: string }[]>`
-      SELECT id, sessionId, playerId FROM AiTurnJob
+    const rows = await tx.$queryRaw<{ id: string; sessionId: string; playerId: string; retryCount: number }[]>`
+      SELECT id, sessionId, playerId, retryCount FROM AiTurnJob
       WHERE status = 'pending'
       ORDER BY createdAt ASC
       LIMIT 1
@@ -80,7 +84,7 @@ export async function claimNextJob(workerId: string): Promise<AiJob | null> {
       where: { id: row.id },
       data: { status: "claimed", claimedBy: workerId, claimedAt: new Date() },
     });
-    return { id: row.id, sessionId: row.sessionId, playerId: row.playerId };
+    return { id: row.id, sessionId: row.sessionId, playerId: row.playerId, retryCount: row.retryCount };
   });
 }
 
@@ -101,15 +105,52 @@ export async function failJob(id: string, error: string): Promise<void> {
 }
 
 /**
- * Reset `claimed` jobs older than `staleMs` milliseconds back to `pending`
- * so they can be retried by another worker (handles crashed workers).
- * Returns the number of jobs recovered.
+ * Reset stale `claimed` jobs back to `pending` so they can be retried by
+ * another worker (handles crashed workers, e.g. OOM during MCTS).
+ *
+ * Jobs that have already been recovered MAX_JOB_RETRIES times are permanently
+ * failed instead of retried — this breaks infinite crash loops (e.g. a game
+ * state that consistently OOMs the MCTS search).
+ *
+ * Returns:
+ *   recovered         — number of jobs reset to pending (will be retried)
+ *   permanentlyFailed — session IDs whose jobs were permanently failed
+ *                       (callers should re-enqueue fresh jobs for these)
  */
-export async function recoverStaleJobs(staleMs = 5 * 60 * 1000): Promise<number> {
+export async function recoverStaleJobs(
+  staleMs = 5 * 60 * 1000,
+): Promise<{ recovered: number; permanentlyFailed: string[] }> {
   const cutoff = new Date(Date.now() - staleMs);
-  const result = await prisma.aiTurnJob.updateMany({
+
+  const staleJobs = await prisma.aiTurnJob.findMany({
     where: { status: "claimed", claimedAt: { lt: cutoff } },
-    data: { status: "pending", claimedBy: null, claimedAt: null },
+    select: { id: true, sessionId: true, retryCount: true },
   });
-  return result.count;
+  if (!staleJobs.length) return { recovered: 0, permanentlyFailed: [] };
+
+  const toRetry = staleJobs.filter((j) => j.retryCount < MAX_JOB_RETRIES);
+  const toFail  = staleJobs.filter((j) => j.retryCount >= MAX_JOB_RETRIES);
+
+  if (toRetry.length) {
+    await prisma.aiTurnJob.updateMany({
+      where: { id: { in: toRetry.map((j) => j.id) } },
+      data: { status: "pending", claimedBy: null, claimedAt: null, retryCount: { increment: 1 } },
+    });
+  }
+
+  if (toFail.length) {
+    await prisma.aiTurnJob.updateMany({
+      where: { id: { in: toFail.map((j) => j.id) } },
+      data: {
+        status: "failed",
+        completedAt: new Date(),
+        result: { error: `Exceeded ${MAX_JOB_RETRIES} stale-recovery retries — permanently failed` } as object,
+      },
+    });
+  }
+
+  return {
+    recovered: toRetry.length,
+    permanentlyFailed: [...new Set(toFail.map((j) => j.sessionId))],
+  };
 }

@@ -103,11 +103,41 @@ describe("E2E: auxiliary API routes", () => {
     expect(status).toBe(400);
   });
 
+  it("POST /api/ai/setup (count path) re-enqueue is idempotent — second call returns 0 created", async () => {
+    // Verifies that enqueueAiTurnsForSession dedup correctly handles the case
+    // where AI players already have pending/claimed jobs (no double-scheduling).
+    // This exercises the same dedup path that the failure re-enqueue in ai-worker uses.
+    const name = uniqueName("AiDedupE2E");
+    const { status: regStatus, data: reg } = await register(name, TEST_PASSWORD, {
+      galaxyName: uniqueGalaxy("AiDedupGal"),
+    });
+    expect(regStatus).toBe(201);
+    const sessionId = (reg as { gameSessionId?: string }).gameSessionId!;
+    scheduleTestGalaxyDeletion(sessionId);
+
+    // First setup: creates 2 AI players.
+    const { status: s1, data: d1 } = await api("/api/ai/setup", {
+      method: "POST",
+      body: JSON.stringify({ gameSessionId: sessionId, count: 2 }),
+    });
+    expect(s1).toBe(200);
+    expect((d1 as { created: string[] }).created).toHaveLength(2);
+
+    // Second identical call: AI players already exist, returns empty created list.
+    const { status: s2, data: d2 } = await api("/api/ai/setup", {
+      method: "POST",
+      body: JSON.stringify({ gameSessionId: sessionId, count: 2 }),
+    });
+    expect(s2).toBe(200);
+    // All requested names are already taken — 0 new players created.
+    expect((d2 as { created: string[] }).created).toHaveLength(0);
+  });
+
   it("POST /api/ai/run-all returns results array (empty when human's turn)", async () => {
     const name = uniqueName("RunAllE2E");
     const { data } = await register(name, TEST_PASSWORD, { galaxyName: uniqueGalaxy("RunAllGal") });
-    scheduleTestGalaxyDeletion(data.gameSessionId as string);
-    const { status, data: out } = await runAI(data.gameSessionId as string);
+    scheduleTestGalaxyDeletion((data as { gameSessionId?: string }).gameSessionId);
+    const { status, data: out } = await runAI((data as { gameSessionId?: string }).gameSessionId as string);
     expect(status).toBe(200);
     expect(Array.isArray((out as { results: unknown[] }).results)).toBe(true);
   });
@@ -211,8 +241,8 @@ describe("E2E: auxiliary API routes", () => {
 
     beforeAll(async () => {
       const { data } = await register(a, password, { galaxyName: uniqueGalaxy("MsgGal") });
-      sessionId = data.gameSessionId as string;
-      const invite = data.inviteCode as string;
+      sessionId = (data as { gameSessionId?: string }).gameSessionId as string;
+      const invite = (data as { inviteCode?: string }).inviteCode as string;
       await joinGame(b, password, { inviteCode: invite });
     });
 

@@ -276,19 +276,33 @@ async function runOneAI(
     });
 
     return { action: skipped ? "end_turn" : move.action, message: displayMessage };
-  } catch {
-    const result = await processAction(playerId, "end_turn", undefined, {
-      logMeta: { llmSource: "fallback", aiReasoning: "exception fallback" },
-    });
-    await prisma.gameEvent.create({
-      data: {
-        gameSessionId: gameSessionId ?? undefined,
-        type: "ai_turn",
-        message: `[fallback] ${playerName}: ${result.message}`,
-        details: { llmSource: "fallback", action: "end_turn", reasoning: "exception fallback", success: result.success } as object,
-      },
-    });
-    return { action: "end_turn (fallback)", message: result.message };
+  } catch (primaryErr) {
+    // Bug fix: if processAction(end_turn) itself throws (e.g. transient DB error),
+    // the exception previously propagated into the fire-and-forget runAISequence
+    // call, leaving currentTurnPlayerId pointing at this AI and the session stuck
+    // until the turn timer auto-skipped (up to 24 h). Wrap in a second try/catch
+    // so the outer runAISequence loop can always advance the turn.
+    try {
+      const result = await processAction(playerId, "end_turn", undefined, {
+        logMeta: { llmSource: "fallback", aiReasoning: "exception fallback" },
+      });
+      await prisma.gameEvent.create({
+        data: {
+          gameSessionId: gameSessionId ?? undefined,
+          type: "ai_turn",
+          message: `[fallback] ${playerName}: ${result.message}`,
+          details: { llmSource: "fallback", action: "end_turn", reasoning: "exception fallback", success: result.success } as object,
+        },
+      });
+      return { action: "end_turn (fallback)", message: result.message };
+    } catch (fallbackErr) {
+      const primaryMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+      const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+      console.error(`[srx-ai] runOneAI double-exception for ${playerName}: primary="${primaryMsg}" fallback="${fallbackMsg}"`);
+      // Return a synthetic result so runAISequence can advance the turn.
+      // advanceTurn will move currentTurnPlayerId to the next player.
+      return { action: "end_turn (double-fallback)", message: "AI turn failed — skipped." };
+    }
   }
 }
 

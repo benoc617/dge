@@ -7,6 +7,7 @@ import {
   registerPrismaClient,
   getDb,
   runOutsideTransaction,
+  withAtomicWrites,
   withCommitLock,
   SessionBusyError,
   GalaxyBusyError,
@@ -15,4 +16,4 @@ import {
 // Register once — safe to call multiple times (idempotent after first call).
 registerPrismaClient(prisma as Parameters<typeof registerPrismaClient>[0]);
 
-export { getDb, runOutsideTransaction, withCommitLock, SessionBusyError, GalaxyBusyError };
+export { getDb, runOutsideTransaction, withAtomicWrites, withCommitLock, SessionBusyError, GalaxyBusyError };
