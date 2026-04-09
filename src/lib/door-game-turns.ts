@@ -29,6 +29,7 @@ import {
 } from "@/lib/ai-runner";
 import { processAiMoveOrSkip } from "@/lib/ai-process-move";
 import { resolveDoorAiRuntimeSettings } from "@/lib/door-ai-runtime-settings";
+import { prisma } from "@/lib/prisma";
 
 // ---------------------------------------------------------------------------
 // Pure utilities — re-exported directly from engine
@@ -87,6 +88,12 @@ function makeSrxHooks(options?: { scheduleAiDrain?: boolean }): DoorGameHooks {
       void invalidateLeaderboard(sessionId);
     },
     onDayComplete(sessionId) {
+      // Evict stale player caches for all session members so the next status
+      // poll immediately sees the new day (resets fullTurnsUsedThisRound → 0).
+      void prisma.player
+        .findMany({ where: { gameSessionId: sessionId }, select: { id: true } })
+        .then((players) => { for (const p of players) void invalidatePlayer(p.id); })
+        .catch(() => {});
       if (options?.scheduleAiDrain !== false) {
         void enqueueAiTurnsForSession(sessionId).catch((err) => {
           console.error("[door-game] enqueueAiTurnsForSession after day roll", sessionId, err);

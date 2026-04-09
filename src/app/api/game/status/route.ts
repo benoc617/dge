@@ -5,7 +5,7 @@ import { CIVIL_STATUS_NAMES, PLANET_CONFIG } from "@/lib/game-constants";
 import { getCurrentTurn } from "@/lib/turn-order";
 import { tryRollRound, enqueueAiTurnsForSession } from "@/lib/door-game-turns";
 import { recoverSequentialAI, SEQUENTIAL_AI_STALE_MS } from "@/lib/ai-runner";
-import { getCachedPlayer } from "@/lib/game-state-service";
+import { getCachedPlayer, invalidatePlayer } from "@/lib/game-state-service";
 import bcrypt from "bcryptjs";
 
 const playerInclude = {
@@ -223,17 +223,33 @@ export async function GET(req: NextRequest) {
 
   const body = await buildResponse(player);
 
-  // Non-blocking: after response is sent, check if round needs to roll and enqueue AI jobs.
-  // tryRollRound handles day advancement + round timeout; enqueueAiTurnsForSession inserts
-  // pending rows for the ai-worker process to claim and execute.
+  // Simultaneous mode: if the player has exhausted daily slots, attempt to roll
+  // the round *synchronously* so this response already reflects the new day.
+  // Rolling before returning eliminates the extra poll cycle that previously left
+  // the UI stuck on "WAITING FOR OTHERS" even after the day number had advanced.
   if (body.turnMode === "simultaneous" && player.gameSessionId && body.fullTurnsLeftToday === 0) {
+    const rolled = await tryRollRound(player.gameSessionId);
+    if (rolled) {
+      // Rebuild the response with fresh empire data so canAct / dayNumber are correct.
+      await invalidatePlayer(player.id);
+      const freshPlayer = playerId
+        ? await getCachedPlayer(playerId, () => findPlayerById(playerId))
+        : await prisma.player.findFirst({
+            where: { name: playerName!, isAI: false },
+            orderBy: { createdAt: "desc" },
+            include: playerInclude,
+          });
+      const freshBody = freshPlayer ? await buildResponse(freshPlayer) : body;
+      after(async () => {
+        try { await enqueueAiTurnsForSession(player.gameSessionId!); }
+        catch (e) { console.error("[status] after: enqueue error", e); }
+      });
+      return NextResponse.json(freshBody);
+    }
+    // Round not ready yet — enqueue in background (dedup-safe).
     after(async () => {
-      try {
-        await tryRollRound(player.gameSessionId!);
-        await enqueueAiTurnsForSession(player.gameSessionId!);
-      } catch (e) {
-        console.error("[status] after: tryRollRound/enqueue error", e);
-      }
+      try { await enqueueAiTurnsForSession(player.gameSessionId!); }
+      catch (e) { console.error("[status] after: enqueue error", e); }
     });
   }
 

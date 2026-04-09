@@ -121,7 +121,7 @@ export default function Leaderboard({ currentPlayer, refreshKey, onSelectTarget,
               <span className="w-6 text-right cursor-help inline-flex justify-end">Plt</span>
             </Tooltip>
             <Tooltip tip={TT.turns}>
-              <span className="w-7 text-right cursor-help inline-flex justify-end">Turns</span>
+              <span className="w-7 text-right cursor-help inline-flex justify-end">Turn</span>
             </Tooltip>
             <Tooltip tip={TT.mil}>
               <span className="w-6 text-right cursor-help inline-flex justify-end">Mil</span>
