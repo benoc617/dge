@@ -17,6 +17,7 @@ export async function GET(req: NextRequest) {
       id: true,
       galaxyName: true,
       startedAt: true,
+      status: true,
       players: { select: { id: true } },
       _count: { select: { gameEvents: true } },
     },
@@ -26,21 +27,17 @@ export async function GET(req: NextRequest) {
   const result = await Promise.all(
     sessions.map(async (sess) => {
       const playerIds = sess.players.map((p) => p.id);
-      const [turnLogCount, activePlayerCount] = await Promise.all([
-        playerIds.length > 0
-          ? prisma.turnLog.count({ where: { playerId: { in: playerIds } } })
-          : 0,
-        playerIds.length > 0
-          ? prisma.empire.count({ where: { playerId: { in: playerIds }, turnsLeft: { gt: 0 } } })
-          : 0,
-      ]);
+      const turnLogCount = playerIds.length > 0
+        ? await prisma.turnLog.count({ where: { playerId: { in: playerIds } } })
+        : 0;
       return {
         id: sess.id,
         galaxyName: sess.galaxyName ?? "(unnamed)",
         createdAt: sess.startedAt,
         turnLogCount,
         gameEventCount: sess._count.gameEvents,
-        isActive: activePlayerCount > 0,
+        // Use session.status (not empire.turnsLeft) so non-SRX games show correctly.
+        isActive: sess.status === "active",
       };
     }),
   );
@@ -75,12 +72,12 @@ export async function DELETE(req: NextRequest) {
   }
 
   if (!force) {
-    const playerIds = session.players.map((p) => p.id);
-    const activeCount =
-      playerIds.length > 0
-        ? await prisma.empire.count({ where: { playerId: { in: playerIds }, turnsLeft: { gt: 0 } } })
-        : 0;
-    if (activeCount > 0) {
+    // Use session.status (not empire.turnsLeft) so non-SRX games are guarded correctly.
+    const activeSession = await prisma.gameSession.findUnique({
+      where: { id: sessionId },
+      select: { status: true },
+    });
+    if (activeSession?.status === "active") {
       return NextResponse.json(
         { error: "Session is still active. Pass force=true to purge anyway." },
         { status: 409 },

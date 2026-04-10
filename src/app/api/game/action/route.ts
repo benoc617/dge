@@ -5,6 +5,7 @@ import { SessionBusyError } from "@/lib/db-context";
 import { enqueueAiTurnsForSession } from "@/lib/ai-job-queue";
 import { logSrxTiming, msBetween, msElapsed } from "@/lib/srx-timing";
 import { invalidatePlayerAndLeaderboard } from "@/lib/game-state-service";
+import { recoverSequentialAI } from "@/lib/ai-runner";
 import "@/lib/game-bootstrap"; // ensure all games are registered before any dispatch
 
 export async function POST(req: NextRequest) {
@@ -145,6 +146,14 @@ export async function POST(req: NextRequest) {
   }
 
   if (outcome.notYourTurn) {
+    // If the current player is an AI, the background runAISequence may have
+    // been killed by a restart. Kick recovery so the AI runs and unblocks the
+    // human — they'll pick it up on the next status poll.
+    if (outcome.currentPlayerIsAI && player.gameSessionId) {
+      const sid = player.gameSessionId;
+      const gtype = gameType;
+      after(() => { void recoverSequentialAI(sid, gtype).catch(() => {}); });
+    }
     return NextResponse.json({
       error: `It's ${outcome.currentPlayerName}'s turn`,
       success: false,

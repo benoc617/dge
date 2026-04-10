@@ -35,8 +35,9 @@ export async function GET(req: NextRequest) {
     for (const p of a.players) {
       const sess = p.gameSession;
       const turnsLeft = p.empire?.turnsLeft ?? 0;
-      const sessActive = sess?.status === "active";
-      const isActiveGame = sessActive && turnsLeft > 0;
+      // Use session.status as the canonical active indicator so non-SRX games
+      // (Gin Rummy, Chess — no empire row) show up correctly.
+      const isActiveGame = sess?.status === "active";
       if (isActiveGame) {
         activeGames++;
         if (activeSummaries.length < 8) {

@@ -107,6 +107,8 @@ export interface SequentialActionOutcome {
   notYourTurn?: boolean;
   /** Name of the player whose turn it actually is (when notYourTurn). */
   currentPlayerName?: string;
+  /** True when the current player is an AI (when notYourTurn). Used for restart recovery. */
+  currentPlayerIsAI?: boolean;
   /** True when the session has no active turn (lobby / not started). */
   noActiveTurn?: boolean;
 }
@@ -151,7 +153,7 @@ export class GameOrchestrator<TState> {
   constructor(
     readonly definition: GameDefinition<TState>,
     /** Hooks for sequential turn-order (getCurrentTurn auto-skip). */
-    private readonly turnOrderHooks?: TurnOrderHooks,
+    readonly turnOrderHooks?: TurnOrderHooks,
     /** Hooks for door-game lifecycle (tick, endgame, cache, AI drain). */
     private readonly doorGameHooks?: DoorGameHooks,
   ) {}
@@ -307,6 +309,7 @@ export class GameOrchestrator<TState> {
         result: { success: false, message: `It's ${turn.currentPlayerName}'s turn` },
         notYourTurn: true,
         currentPlayerName: turn.currentPlayerName,
+        currentPlayerIsAI: turn.isAI,
       };
     }
 

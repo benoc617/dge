@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getCurrentTurn } from "@/lib/turn-order";
+import { getCurrentTurn as getSrxCurrentTurn } from "@/lib/turn-order";
+import { getCurrentTurn as getEngineTurn } from "@dge/engine/turn-order";
 import { tryRollRound, enqueueAiTurnsForSession } from "@/lib/door-game-turns";
 import { recoverSequentialAI, SEQUENTIAL_AI_STALE_MS } from "@/lib/ai-runner";
 import { getCachedPlayer, invalidatePlayer } from "@/lib/game-state-service";
@@ -131,14 +132,25 @@ export async function GET(req: NextRequest) {
   }
 
   // Non-blocking: recover a sequential-mode AI turn abandoned after a restart.
+  // Use game-specific turnOrderHooks (includes getActivePlayers) so games like
+  // Gin Rummy that override turn routing are handled correctly.
   if (body.turnMode === "sequential" && player.gameSessionId && !body.isYourTurn) {
+    const sessionIdForRecovery = player.gameSessionId;
+    const gameTypeForRecovery = (body.game as string | undefined) ?? "srx";
     after(async () => {
       try {
-        const turn = await getCurrentTurn(player.gameSessionId!);
+        const { orchestrator } = requireGame(gameTypeForRecovery);
+        const hooks = orchestrator.turnOrderHooks;
+        // Use game-specific hooks when available so getActivePlayers reflects
+        // the game's own state (e.g. Gin Rummy reads currentPlayer from log).
+        // Fall back to the SRX-flavoured shim for legacy sessions.
+        const turn = hooks
+          ? await getEngineTurn(sessionIdForRecovery, hooks)
+          : await getSrxCurrentTurn(sessionIdForRecovery);
         if (!turn?.isAI) return;
         const ageMs = Date.now() - new Date(turn.turnStartedAt).getTime();
         if (ageMs < SEQUENTIAL_AI_STALE_MS) return;
-        await recoverSequentialAI(player.gameSessionId!);
+        await recoverSequentialAI(sessionIdForRecovery, gameTypeForRecovery);
       } catch (e) {
         console.error("[status] after: sequential AI stale-turn recovery error", e);
       }

@@ -342,13 +342,34 @@ export const SEQUENTIAL_AI_STALE_MS = 90_000;
  * to now. If `turnStartedAt` is already fresh (< SEQUENTIAL_AI_STALE_MS ago),
  * the conditional update matches 0 rows and this is a no-op — preventing
  * duplicate recovery across multiple Next.js workers.
+ *
+ * Uses the game-specific `definition.runAiSequence` when available (e.g. Gin
+ * Rummy, Chess) so the correct AI logic runs rather than the SRX-specific
+ * `runOneAI` path (which bails early when there's no empire row).
  */
-export async function recoverSequentialAI(gameSessionId: string): Promise<void> {
+export async function recoverSequentialAI(gameSessionId: string, gameType?: string): Promise<void> {
   const cutoff = new Date(Date.now() - SEQUENTIAL_AI_STALE_MS);
   const { count } = await prisma.gameSession.updateMany({
     where: { id: gameSessionId, turnStartedAt: { lt: cutoff } },
     data: { turnStartedAt: new Date() },
   });
   if (count === 0) return; // Turn is fresh, or another worker already claimed recovery
+
+  // Prefer game-specific runAiSequence (non-SRX games like Gin Rummy, Chess).
+  const resolvedType = gameType ?? (await prisma.gameSession.findUnique({
+    where: { id: gameSessionId },
+  }) as { gameType?: string | null } | null)?.gameType ?? "srx";
+
+  try {
+    const { requireGame } = await import("@dge/engine/registry");
+    const { definition } = requireGame(resolvedType);
+    if (definition.runAiSequence) {
+      void definition.runAiSequence(gameSessionId);
+      return;
+    }
+  } catch {
+    // fallthrough to SRX path below
+  }
+
   void runAISequence(gameSessionId);
 }
