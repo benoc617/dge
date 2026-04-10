@@ -5,7 +5,7 @@
 import { describe, it, expect, afterAll } from "vitest";
 import {
   api, getStatus, doAction,
-  deleteTestGalaxySession, scheduleTestGalaxyDeletion,
+  deleteTestGalaxySession,
   scheduleTestUserDeletion,
   uniqueGalaxy, uniqueName,
   pollStatusUntil,
@@ -54,7 +54,9 @@ describe("Chess E2E", () => {
     playerId = data.id as string;
     expect(sessionId).toBeTruthy();
     expect(playerId).toBeTruthy();
-    scheduleTestGalaxyDeletion(sessionId);
+    // Note: cleanup is handled by afterAll via deleteTestGalaxySession — do NOT call
+    // scheduleTestGalaxyDeletion here, as afterEach would flush it and delete the session
+    // before subsequent tests can use playerId/sessionId.
   });
 
   it("returns chess status with board", async () => {

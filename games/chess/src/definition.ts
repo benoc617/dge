@@ -8,6 +8,7 @@
 import type {
   GameDefinition, ActionResult, TickResult, Move, Rng,
   FullActionOptions, FullActionResult, FullTurnReport,
+  AiDifficultyTier, AiDifficultyProfile,
 } from "@dge/shared";
 import type { SearchGameFunctions } from "@dge/engine/search";
 import { mctsSearch } from "@dge/engine/search";
@@ -139,18 +140,63 @@ export const chessSearchFunctions: SearchGameFunctions<ChessState> = {
 };
 
 // ---------------------------------------------------------------------------
+// AI difficulty profile
+// ---------------------------------------------------------------------------
+
+export const CHESS_DIFFICULTY_PROFILE: AiDifficultyProfile = {
+  easy: {
+    label: "Beginner",
+    mctsConfig: {
+      timeLimitMs: 400,
+      iterations: 300,
+      rolloutDepth: 15,
+      branchFactor: 20,
+      explorationC: 1.5,
+    },
+  },
+  medium: {
+    label: "Club Player",
+    mctsConfig: {
+      timeLimitMs: 3000,
+      iterations: 2000,
+      rolloutDepth: 40,
+      branchFactor: 60,
+      explorationC: Math.SQRT2,
+    },
+  },
+  hard: {
+    label: "Expert",
+    mctsConfig: {
+      timeLimitMs: 8000,
+      iterations: 6000,
+      rolloutDepth: 60,
+      branchFactor: 80,
+      explorationC: Math.SQRT2,
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
 // AI move via MCTS
 // ---------------------------------------------------------------------------
 
-export async function getChessAIMove(state: ChessState): Promise<Move | null> {
+/**
+ * Pick an AI move using MCTS.
+ * The `tier` argument is optional — when omitted the medium profile is used.
+ */
+export async function getChessAIMove(
+  state: ChessState,
+  tier?: AiDifficultyTier,
+): Promise<Move | null> {
   if (state.status !== "playing") return null;
   const playerIdx = state.turn === "white" ? 0 : 1;
+  const cfg = (tier ?? CHESS_DIFFICULTY_PROFILE.medium).mctsConfig ?? {};
   const result = mctsSearch(chessSearchFunctions, cloneState(state), playerIdx, {
-    iterations: 2000,
-    timeLimitMs: 3000,
-    rolloutDepth: 40,
-    explorationC: Math.SQRT2,
-    branchFactor: 60,
+    iterations: cfg.iterations ?? 2000,
+    timeLimitMs: cfg.timeLimitMs ?? 3000,
+    rolloutDepth: cfg.rolloutDepth ?? 40,
+    explorationC: cfg.explorationC ?? Math.SQRT2,
+    branchFactor: cfg.branchFactor ?? 60,
   });
   return result;
 }
@@ -165,6 +211,7 @@ export const chessGameDefinition: GameDefinition<ChessState> = {
   applyAction: chessApplyAction,
   evalState: chessEval,
   generateCandidateMoves: chessGenerateMoves,
+  aiDifficultyProfile: CHESS_DIFFICULTY_PROFILE,
 
   async processFullAction(
     playerId: string,
@@ -215,7 +262,10 @@ export const chessGameDefinition: GameDefinition<ChessState> = {
       });
       if (!player?.isAI) break;
 
-      const move = await getChessAIMove(state);
+      // Resolve difficulty tier from state (defaulting to medium)
+      const difficulty = (state.aiDifficulty ?? "medium") as "easy" | "medium" | "hard";
+      const tier = CHESS_DIFFICULTY_PROFILE[difficulty];
+      const move = await getChessAIMove(state, tier);
       if (!move) {
         // No move found — resign
         const resigned = resign(state);

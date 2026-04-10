@@ -17,7 +17,20 @@ const ginRummyMetadata: GameMetadata = {
   playerRange: [2, 2],
   supportsJoin: true,
   autoCreateAI: false,
-  createOptions: [],
+  createOptions: [
+    {
+      key: "aiDifficulty",
+      label: "AI Difficulty",
+      description: "How hard the AI opponent plays. Higher levels track discards and infer melds.",
+      type: "select",
+      default: "medium",
+      options: [
+        { value: "easy",   label: "Casual"      },
+        { value: "medium", label: "Competitive" },
+        { value: "hard",   label: "Shark"       },
+      ],
+    },
+  ],
 };
 
 registerGame("ginrummy", {

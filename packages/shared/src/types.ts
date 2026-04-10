@@ -305,6 +305,13 @@ export interface GameDefinition<TState> {
   /** Admin panel extensions for this game. */
   admin?: GameAdminConfig;
 
+  /**
+   * Difficulty profile for games that support AI difficulty selection.
+   * When set, the engine recognises the standard "aiDifficulty" session option
+   * and passes the resolved AiDifficultyTier to the game's AI runner.
+   */
+  aiDifficultyProfile?: AiDifficultyProfile;
+
   // -------------------------------------------------------------------------
   // Full-track migration shims (Phase 5+)
   //
@@ -351,6 +358,53 @@ export interface GameDefinition<TState> {
    * the orchestrator calls the engine's closeFullTurn directly.
    */
   postActionClose?(playerId: string, sessionId: string): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// AI Difficulty system
+// ---------------------------------------------------------------------------
+
+/**
+ * Standard difficulty tiers understood by the engine and all games.
+ * Each game maps these to its own search budget and behavioral flags.
+ */
+export type AiDifficulty = "easy" | "medium" | "hard";
+
+/**
+ * Per-tier configuration for a game's AI.
+ *
+ * `mctsConfig` — search budget / depth overrides fed to mctsSearch.
+ * `behavior`   — arbitrary game-specific flags (e.g. trackDiscards, countCards).
+ *                The engine is opaque to these; each game casts them internally.
+ */
+export interface AiDifficultyTier {
+  /** Human-readable label shown in the UI (e.g. "Beginner", "Shark"). */
+  label?: string;
+  /** MCTS search budget and shape overrides. */
+  mctsConfig?: {
+    timeLimitMs?: number;
+    iterations?: number;
+    rolloutDepth?: number;
+    branchFactor?: number;
+    explorationC?: number;
+  };
+  /**
+   * Arbitrary game-specific behavioral flags.
+   * Examples:
+   *   Gin Rummy: { trackDiscards: boolean; inferOpponentMelds: boolean }
+   *   Blackjack: { countCards: boolean }
+   */
+  behavior?: Record<string, unknown>;
+}
+
+/**
+ * A game's full difficulty profile. Add to `GameDefinition.aiDifficultyProfile`
+ * to advertise difficulty support to the engine and lobby.
+ */
+export interface AiDifficultyProfile {
+  easy: AiDifficultyTier;
+  medium: AiDifficultyTier;
+  hard: AiDifficultyTier;
 }
 
 // ---------------------------------------------------------------------------

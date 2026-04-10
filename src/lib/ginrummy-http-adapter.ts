@@ -18,6 +18,7 @@ export const ginRummyHttpAdapter: GameHttpAdapter = {
 
   async onSessionCreated(sessionId, creatorPlayerId, options) {
     const opponentMode = (options?.opponentMode as string) || "ai";
+    const aiDifficulty = (options?.aiDifficulty as "easy" | "medium" | "hard" | undefined) ?? "medium";
 
     if (opponentMode === "human") {
       await prisma.gameSession.update({
@@ -45,6 +46,7 @@ export const ginRummyHttpAdapter: GameHttpAdapter = {
     const matchTarget = parseMatchTarget(options?.matchTarget);
     const { createInitialState } = await import("@dge/ginrummy");
     const state = createInitialState(creatorPlayerId, ai.id, matchTarget);
+    state.aiDifficulty = aiDifficulty;
 
     await prisma.gameSession.update({
       where: { id: sessionId },
@@ -255,6 +257,7 @@ export const ginRummyHttpAdapter: GameHttpAdapter = {
       knockerMelds,
       isLayoffPhase,
       layoffOptions,
+      aiDifficulty: state?.aiDifficulty ?? "medium",
 
       turnOrder: players.map((p) => ({
         name: p.name,

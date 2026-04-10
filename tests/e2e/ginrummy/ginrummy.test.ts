@@ -6,7 +6,7 @@
 import { describe, it, expect, afterAll } from "vitest";
 import {
   api, getStatus,
-  deleteTestGalaxySession, scheduleTestGalaxyDeletion,
+  deleteTestGalaxySession,
   scheduleTestUserDeletion,
   uniqueGalaxy, uniqueName, sleep,
   TEST_PASSWORD, pollStatusUntil,
@@ -61,7 +61,7 @@ describe("Gin Rummy E2E", () => {
     playerId = data.id as string;
     expect(sessionId).toBeTruthy();
     expect(playerId).toBeTruthy();
-    scheduleTestGalaxyDeletion(sessionId);
+    // cleanup handled by afterAll via deleteTestGalaxySession
   });
 
   // ---------------------------------------------------------------------------
@@ -345,7 +345,7 @@ describe("Gin Rummy human vs human", () => {
     hvhSessionId = data.gameSessionId as string;
     p1Id = data.id as string;
     const inviteCode = data.inviteCode as string;
-    scheduleTestGalaxyDeletion(hvhSessionId);
+    // cleanup handled by afterAll via deleteTestGalaxySession
 
     // P1 should be in waitingForGameStart state
     const statusRes = await getStatus(p1Id!);

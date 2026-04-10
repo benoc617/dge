@@ -192,6 +192,51 @@ interface GameAdminConfig {
 }
 ```
 
+### 4.3 AI Difficulty System (`@dge/shared`)
+
+Games that support AI difficulty selection declare an `aiDifficultyProfile` on their `GameDefinition`. The engine recognises the standard `aiDifficulty` session-creation option and stores the selected tier in game state (not in the engine itself — each game owns persistence).
+
+```typescript
+type AiDifficulty = "easy" | "medium" | "hard"
+
+interface AiDifficultyTier {
+  label?: string                   // human-readable name (e.g. "Beginner", "Shark")
+  mctsConfig?: {                   // overrides for the engine's mctsSearch call
+    timeLimitMs?: number
+    iterations?: number
+    rolloutDepth?: number
+    branchFactor?: number
+    explorationC?: number
+  }
+  behavior?: Record<string, unknown>  // arbitrary game-specific flags
+  // Examples:
+  //   Gin Rummy: { trackDiscards: boolean; inferOpponentMelds: boolean }
+  //   Blackjack: { countCards: boolean }
+}
+
+interface AiDifficultyProfile {
+  easy: AiDifficultyTier
+  medium: AiDifficultyTier
+  hard: AiDifficultyTier
+}
+```
+
+**Responsibilities by layer:**
+
+| Layer | Responsibility |
+|-------|----------------|
+| `@dge/shared` | Defines the three types above |
+| `GameDefinition` | Declares `aiDifficultyProfile?` — the mapping from tier name to config |
+| `GameMetadata.createOptions` | Includes an `aiDifficulty` option of type `"select"` so the lobby renders the dropdown |
+| `GameHttpAdapter.onSessionCreated` | Reads `options.aiDifficulty`, stores it in game state |
+| Game AI function (e.g. `getChessAIMove`, `getGinRummyAIMove`) | Accepts an optional `AiDifficultyTier`; reads `mctsConfig` and `behavior` from it |
+
+The `behavior` field is opaque to the engine — each game defines and casts its own behavioral struct. This lets future games add domain-specific AI capabilities (e.g. card counting in Blackjack) using the same architecture without any engine changes.
+
+Currently implementing games:
+- **Chess** — `CHESS_DIFFICULTY_PROFILE` (Beginner / Club Player / Expert); no behavioral flags, MCTS budget only.
+- **Gin Rummy** — `GINRUMMY_DIFFICULTY_PROFILE` (Casual / Competitive / Shark); behavioral flags `trackDiscards` and `inferOpponentMelds` extend the MCTS search with discard-pile observation tracking.
+
 ---
 
 ## 5. Game Registry (`packages/engine/src/registry.ts`)
@@ -498,7 +543,7 @@ See **Appendix A** for the full interface specifications referenced below.
 |------|-----------|
 | 1 | Create `games/<name>/` with `package.json` (`@dge/<name>`), `tsconfig.json`, `src/definition.ts`, `docs/GAME-SPEC.md` |
 | 2 | Implement `GameDefinition<TState>` (§4, §A.1) — required: `loadState`, `saveState`, `applyAction`, `evalState`, `generateCandidateMoves` |
-| 3 | Implement `GameMetadata` (§A.2) — lobby card and create-game form |
+| 3 | Implement `GameMetadata` (§A.2) — lobby card and create-game form; include `aiDifficulty` select option if the game supports difficulty selection |
 | 4 | Implement `GameHttpAdapter` (§A.3) — required: `buildStatus`, `getPlayerCreateData`, `defaultTotalTurns`, `defaultActionsPerDay`; optional: `defaultTurnTimeoutSecs` |
 | 5 | Create `src/lib/<name>-registration.ts` — calls `registerGame("<name>", { definition, metadata, adapter, hooks? })` |
 | 6 | Add `import "@/lib/<name>-registration"` to `src/lib/game-bootstrap.ts` |
@@ -508,6 +553,7 @@ See **Appendix A** for the full interface specifications referenced below.
 | 10 | Add path aliases to root `tsconfig.json` and `COPY` lines to `Dockerfile.dev` |
 | 11 | If using game-specific Prisma models, add to `schema.prisma` and run `prisma db push` |
 | 12 | Add tests: `tests/unit/<name>-*.test.ts` + `tests/e2e/<name>-*.test.ts` |
+| 13 | **Optional AI difficulty**: define an `AiDifficultyProfile` (§4.3), add it to `GameDefinition.aiDifficultyProfile`, store the selected tier in game state, and read it in the AI move function |
 
 **Optional per turn mode**: implement `TurnOrderHooks` (§A.4) for sequential mode, `DoorGameHooks` (§A.5) for simultaneous mode, `SearchGameFunctions` (§A.6) for MCTS AI.
 
@@ -537,6 +583,7 @@ Each `GameScreen` fully owns its in-game UI — panels, polling, actions, modals
 | SRX context bridging | Unit | `tests/unit/srx-context-bridging.test.ts` |
 | AI concurrency semaphores | Unit | `tests/unit/ai-concurrency.test.ts` |
 | AI runtime settings | Unit | `tests/unit/door-ai-runtime-settings.test.ts` |
+| AI difficulty profiles | Unit | `tests/unit/ai-difficulty.test.ts` |
 | RNG | Unit | `tests/unit/rng.test.ts` |
 | Help API | E2E | `tests/e2e/api-routes.test.ts` |
 | Admin CRUD | E2E | `tests/e2e/admin.test.ts` |

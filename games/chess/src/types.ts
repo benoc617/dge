@@ -47,4 +47,6 @@ export interface ChessState {
   capturedByBlack: PieceType[];
   positionHistory: string[];
   inCheck: boolean;
+  /** AI difficulty chosen at session creation. Default "medium" when absent. */
+  aiDifficulty?: "easy" | "medium" | "hard";
 }

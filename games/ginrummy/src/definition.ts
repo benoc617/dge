@@ -17,6 +17,7 @@
 
 import type {
   GameDefinition, FullActionOptions, FullActionResult,
+  AiDifficultyTier, AiDifficultyProfile,
 } from "@dge/shared";
 import type { Move } from "@dge/shared";
 import type { SearchGameFunctions } from "@dge/engine/search";
@@ -494,6 +495,7 @@ function determinizeState(
   state: GinRummyState,
   aiPlayerIdx: 0 | 1,
   rng: () => number,
+  behavior?: GinAiBehavior,
 ): GinRummyState {
   const oppIdx = (1 - aiPlayerIdx) as 0 | 1;
   const oppHandSize = state.players[oppIdx].cards.length;
@@ -506,26 +508,94 @@ function determinizeState(
     ...(state.knockerMelds ? state.knockerMelds.flat().map(cardKey) : []),
   ]);
 
-  const unknownCards = createDeck().filter((c) => !knownKeys.has(cardKey(c)));
-  const shuffled = shuffleDeck(unknownCards, rng);
+  // When trackDiscards is enabled, use observed opponent pickups to bias the
+  // determinization: keep those cards in the opponent's hand if possible.
+  const observedOppKeys: string[] =
+    behavior?.trackDiscards && state.observedPickups
+      ? (state.observedPickups[oppIdx] ?? [])
+      : [];
 
+  const unknownCards = createDeck().filter((c) => !knownKeys.has(cardKey(c)));
+
+  // Separate unknown cards into "likely in opponent hand" (observed) and the rest.
+  const observedSet = new Set(observedOppKeys);
+  const likelyOpp = unknownCards.filter((c) => observedSet.has(cardKey(c)));
+  const remaining = unknownCards.filter((c) => !observedSet.has(cardKey(c)));
+
+  const shuffledRemaining = shuffleDeck(remaining, rng);
+  const shuffledLikely = shuffleDeck(likelyOpp, rng);
+
+  // Fill opponent hand: prefer observed cards, then fill with unknowns.
+  const oppPool = [...shuffledLikely, ...shuffledRemaining];
   const det = cloneState(state);
-  det.players[oppIdx].cards = shuffled.slice(0, oppHandSize);
-  det.deck = shuffled.slice(oppHandSize, oppHandSize + stockSize);
+  det.players[oppIdx].cards = oppPool.slice(0, oppHandSize);
+  // Remaining pool (after opponent hand) goes to deck.
+  const deckPool = oppPool.slice(oppHandSize);
+  det.deck = deckPool.slice(0, stockSize);
   return det;
 }
+
+// ---------------------------------------------------------------------------
+// AI difficulty profile
+// ---------------------------------------------------------------------------
+
+/**
+ * Gin Rummy specific AI behavioral flags.
+ * These extend the generic MCTS budget with strategic awareness options.
+ */
+export interface GinAiBehavior {
+  /**
+   * When true, the AI tracks which cards the opponent has picked from the
+   * discard pile (recorded in state.observedPickups). It biases determinizations
+   * to keep observed picks in the opponent's hand, improving meld inference.
+   */
+  trackDiscards: boolean;
+  /**
+   * When true, the AI further biases candidate discard moves away from cards
+   * that would complete known/inferred opponent melds. Requires trackDiscards.
+   */
+  inferOpponentMelds: boolean;
+}
+
+export const GINRUMMY_DIFFICULTY_PROFILE: AiDifficultyProfile = {
+  easy: {
+    label: "Casual",
+    mctsConfig: {
+      timeLimitMs: 300,
+      iterations: 100,
+    },
+    behavior: { trackDiscards: false, inferOpponentMelds: false } satisfies GinAiBehavior,
+  },
+  medium: {
+    label: "Competitive",
+    mctsConfig: {
+      timeLimitMs: 700,
+      iterations: 200,
+    },
+    behavior: { trackDiscards: true, inferOpponentMelds: false } satisfies GinAiBehavior,
+  },
+  hard: {
+    label: "Shark",
+    mctsConfig: {
+      timeLimitMs: 2000,
+      iterations: 400,
+    },
+    behavior: { trackDiscards: true, inferOpponentMelds: true } satisfies GinAiBehavior,
+  },
+};
 
 // ---------------------------------------------------------------------------
 // AI move selection (MCTS + voting across determinizations)
 // ---------------------------------------------------------------------------
 
 const N_DETERMINIZATIONS = 6;
-const MCTS_ITERATIONS = 200;
-const MCTS_BUDGET_MS = 2000;
+const DEFAULT_MCTS_ITERATIONS = 200;
+const DEFAULT_MCTS_BUDGET_MS = 2000;
 
 export async function getGinRummyAIMove(
   state: GinRummyState,
   aiPlayerId: string,
+  tier?: AiDifficultyTier,
 ): Promise<{ action: string; params: Record<string, unknown> } | null> {
   const aiIdx = state.playerIds[0] === aiPlayerId ? 0 : 1;
 
@@ -554,12 +624,18 @@ export async function getGinRummyAIMove(
   if (state.phase !== "draw" && state.phase !== "discard") return null;
   if (state.currentPlayer !== aiIdx) return null;
 
+  // Resolve behavior flags and MCTS config from difficulty tier
+  const behavior = (tier?.behavior as GinAiBehavior | undefined) ?? { trackDiscards: false, inferOpponentMelds: false };
+  const mctsConfig = tier?.mctsConfig ?? {};
+  const iterationsPerDet = mctsConfig.iterations ?? DEFAULT_MCTS_ITERATIONS;
+  const totalBudgetMs = mctsConfig.timeLimitMs ?? DEFAULT_MCTS_BUDGET_MS;
+
   const voteCounts = new Map<string, number>();
-  const budget = Math.floor(MCTS_BUDGET_MS / N_DETERMINIZATIONS);
+  const budget = Math.floor(totalBudgetMs / N_DETERMINIZATIONS);
 
   for (let i = 0; i < N_DETERMINIZATIONS; i++) {
     const rng = makeSeedRng(i * 7919 + Date.now() % 1000);
-    const det = determinizeState(state, aiIdx, rng);
+    const det = determinizeState(state, aiIdx, rng, behavior);
 
     const candidates = generateMctsCandidates(det, aiIdx, 30);
     if (candidates.length === 0) continue;
@@ -570,7 +646,7 @@ export async function getGinRummyAIMove(
 
     try {
       const move = await mctsSearchAsync(ginRummySearchFunctions, det, aiIdx, {
-        iterations: MCTS_ITERATIONS,
+        iterations: iterationsPerDet,
         timeLimitMs: budget,
         rolloutDepth: 20,
         branchFactor: 20,
@@ -636,12 +712,48 @@ function mctsToApiMove(
 }
 
 // ---------------------------------------------------------------------------
+// Discard-pickup observation tracking
+// ---------------------------------------------------------------------------
+
+/**
+ * When a player uses `draw_discard`, record the top discard card in
+ * state.observedPickups so the opponent AI can use it in determinizations.
+ * This function is intentionally cheap — it only acts on draw_discard.
+ * Returns the updated state (or the original if no tracking needed).
+ */
+function trackDiscardPickupIfNeeded(
+  prevState: GinRummyState,
+  newState: GinRummyState,
+  playerId: string,
+  action: string,
+): GinRummyState {
+  if (action !== "draw_discard") return newState;
+  // The top of the discard pile before the draw is now in the player's hand.
+  const topCard = prevState.discardPile[prevState.discardPile.length - 1];
+  if (!topCard) return newState;
+
+  const playerIdx = newState.playerIds[0] === playerId ? 0 : 1;
+  const key = cardKey(topCard);
+
+  const current: [string[], string[]] = newState.observedPickups
+    ? [[...newState.observedPickups[0]], [...newState.observedPickups[1]]]
+    : [[], []];
+
+  if (!current[playerIdx].includes(key)) {
+    current[playerIdx].push(key);
+  }
+
+  return { ...newState, observedPickups: current };
+}
+
+// ---------------------------------------------------------------------------
 // Full-track GameDefinition (DB-backed for the orchestrator)
 // ---------------------------------------------------------------------------
 
 export const ginRummyGameDefinition: GameDefinition<GinRummyState> = {
   loadState: async (sessionId) => loadGinRummyState(sessionId),
   saveState: async (sessionId, state) => saveGinRummyState(sessionId, state),
+  aiDifficultyProfile: GINRUMMY_DIFFICULTY_PROFILE,
 
   applyAction(state, playerId, action, params) {
     return ginRummyApplyAction(state, playerId, action, params) as ReturnType<
@@ -693,19 +805,29 @@ export const ginRummyGameDefinition: GameDefinition<GinRummyState> = {
       return { success: false, message: result.message };
     }
 
-    await saveGinRummyState(sessionId, result.state);
+    // Track discard pickups for inference-aware AI difficulties.
+    // When a player draws from the discard pile, record the card so the opponent
+    // AI can use it to bias future determinizations.
+    const updatedState = trackDiscardPickupIfNeeded(
+      state,
+      result.state,
+      playerId,
+      action,
+    );
+
+    await saveGinRummyState(sessionId, updatedState);
     await logTurnLog(playerId, action, params, result.message, {
       handNumber: state.handNumber,
       phase: prevPhase,
     });
 
     // Write session event when phase/status changed to a noteworthy state
-    const nowOver = isGameOver(result.state);
+    const nowOver = isGameOver(updatedState);
     const handJustEnded =
-      result.state.phase === "hand_over" && prevPhase !== "hand_over";
-    const matchJustEnded = result.state.status !== prevStatus && nowOver;
+      updatedState.phase === "hand_over" && prevPhase !== "hand_over";
+    const matchJustEnded = updatedState.status !== prevStatus && nowOver;
     if (matchJustEnded || (handJustEnded && !nowOver)) {
-      await handleSessionEvent(sessionId, result.state);
+      await handleSessionEvent(sessionId, updatedState);
     }
 
     return { success: true, message: result.message };
@@ -729,7 +851,10 @@ export const ginRummyGameDefinition: GameDefinition<GinRummyState> = {
       });
       if (!player?.isAI) break;
 
-      const move = await getGinRummyAIMove(state, currentPlayerId);
+      // Resolve difficulty tier from state
+      const difficulty = (state.aiDifficulty ?? "medium") as "easy" | "medium" | "hard";
+      const tier = GINRUMMY_DIFFICULTY_PROFILE[difficulty];
+      const move = await getGinRummyAIMove(state, currentPlayerId, tier);
       if (!move) break;
 
       const prevPhase = state.phase;

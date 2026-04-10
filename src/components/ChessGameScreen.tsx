@@ -36,6 +36,7 @@ interface ChessStatus {
   turnTimeoutSecs: number;
   turnOrder: { name: string; isAI: boolean; isCurrent: boolean }[];
   game?: string;
+  aiDifficulty?: "easy" | "medium" | "hard";
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +407,14 @@ export function ChessGameScreen({
           <span className="text-gray-600">·</span>
           <span className="text-green-600">{playerName}</span>
           <span className="text-gray-700">({status.myColor})</span>
+          {status.aiDifficulty && status.aiDifficulty !== "medium" && (
+            <span className="text-green-800 text-[10px]">
+              {status.aiDifficulty === "easy" ? "Beginner" : "Expert"}
+            </span>
+          )}
+          {status.aiDifficulty === "medium" && (
+            <span className="text-green-800 text-[10px]">Club</span>
+          )}
           <button
             type="button"
             onClick={() => void openHelp()}

@@ -31,6 +31,7 @@ interface ChessState {
   capturedByBlack: PieceType[];   // pieces captured by black
   positionHistory: string[];      // board position hashes for threefold repetition detection
   inCheck: boolean;               // whether the current player's king is in check
+  aiDifficulty?: "easy" | "medium" | "hard"; // AI difficulty chosen at session creation; default "medium"
 }
 ```
 
@@ -186,6 +187,18 @@ Uses the engine's standard turn timer mechanism (`GameSession.turnStartedAt` + `
 | `supportsJoin` | true |
 | `turnMode` | sequential |
 
+### AI Difficulty
+
+Chess supports three difficulty tiers selected at session creation via the `aiDifficulty` option (default `medium`). The tier is stored in `ChessState.aiDifficulty` and applied whenever the AI makes a move.
+
+| Tier | Label | `timeLimitMs` | `iterations` | `rolloutDepth` | `branchFactor` |
+|------|-------|---------------|-------------|----------------|----------------|
+| `easy` | Beginner | 400 ms | 300 | 15 | 20 |
+| `medium` | Club Player | 3 000 ms | 2 000 | 40 | 60 |
+| `hard` | Expert | 8 000 ms | 6 000 | 60 | 80 |
+
+The full profile is exported as `CHESS_DIFFICULTY_PROFILE` from `@dge/chess`.
+
 ---
 
 ## 8. API Endpoints
@@ -265,7 +278,8 @@ Interactive graphical board rendered in `src/components/ChessGameScreen.tsx`:
 |------|-------|----------|
 | `tests/unit/chess-rules.test.ts` | 25 | Initial board, move gen, captures, en passant, castling (both sides), check, checkmate, stalemate, resign, clone, notation, material eval, position key, 50-move rule |
 | `tests/unit/chess-mcts.test.ts` | 10 | `chessSearchFunctions` (applyTick, applyAction, evalState, generateCandidateMoves, isTerminal, getPlayerCount, cloneState), MCTS integration (valid move from initial position, mate-in-1 detection) |
-| `tests/e2e/chess.test.ts` | 8 | Register chess game, status with board, legal moves endpoint, play a move, AI response polling, illegal move rejection, resign, 410 after game over |
+| `tests/unit/ai-difficulty.test.ts` | 12 | `CHESS_DIFFICULTY_PROFILE` structure (tiers, budget ordering, labels), `getChessAIMove` with explicit difficulty tier, `GINRUMMY_DIFFICULTY_PROFILE` structure, `getGinRummyAIMove` with explicit tier |
+| `tests/e2e/chess/chess.test.ts` | 8 | Register chess game, status with board, legal moves endpoint, play a move, AI response polling, illegal move rejection, resign, 410 after game over |
 
 ---
 

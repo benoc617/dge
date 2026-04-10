@@ -17,7 +17,20 @@ const chessMetadata: GameMetadata = {
   playerRange: [2, 2],
   supportsJoin: true,
   autoCreateAI: false,
-  createOptions: [],
+  createOptions: [
+    {
+      key: "aiDifficulty",
+      label: "AI Difficulty",
+      description: "Strength of the computer opponent (affects search depth and time).",
+      type: "select",
+      default: "medium",
+      options: [
+        { value: "easy",   label: "Beginner"    },
+        { value: "medium", label: "Club Player" },
+        { value: "hard",   label: "Expert"      },
+      ],
+    },
+  ],
 };
 
 registerGame("chess", {

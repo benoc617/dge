@@ -97,9 +97,7 @@ export async function deleteGameSession(sessionId: string): Promise<boolean> {
       }
     }
 
-    for (const pid of playerIds) {
-      await tx.empire.delete({ where: { playerId: pid } });
-    }
+    await tx.empire.deleteMany({ where: { playerId: { in: playerIds } } });
     await tx.player.deleteMany({ where: { gameSessionId: sessionId } });
     await tx.gameSession.delete({ where: { id: sessionId } });
   });

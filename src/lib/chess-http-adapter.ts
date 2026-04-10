@@ -18,6 +18,7 @@ export const chessHttpAdapter: GameHttpAdapter = {
 
   async onSessionCreated(sessionId, creatorPlayerId, options) {
     const opponentMode = (options?.opponentMode as string) || "ai";
+    const aiDifficulty = (options?.aiDifficulty as "easy" | "medium" | "hard" | undefined) ?? "medium";
 
     if (opponentMode === "human") {
       // Wait for a human to join — don't init state yet (need both player IDs).
@@ -45,6 +46,7 @@ export const chessHttpAdapter: GameHttpAdapter = {
 
     const { createInitialState } = await import("@dge/chess");
     const state = createInitialState(creatorPlayerId, ai.id);
+    state.aiDifficulty = aiDifficulty;
 
     await prisma.gameSession.update({
       where: { id: sessionId },
@@ -150,6 +152,7 @@ export const chessHttpAdapter: GameHttpAdapter = {
       capturedByBlack: state?.capturedByBlack ?? [],
       fullMoveNumber: state?.fullMoveNumber ?? 1,
       halfMoveClock: state?.halfMoveClock ?? 0,
+      aiDifficulty: state?.aiDifficulty ?? "medium",
 
       turnOrder: players.map((p) => ({
         name: p.name,

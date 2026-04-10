@@ -70,4 +70,14 @@ export interface GinRummyState {
 
   status: GameStatus;
   winner: (0 | 1) | null;
+
+  /** AI difficulty chosen at session creation. Default "medium" when absent. */
+  aiDifficulty?: "easy" | "medium" | "hard";
+
+  /**
+   * Tracks cards the AI has observed the opponent pick from the discard pile.
+   * Used when `trackDiscards` behavior is enabled (medium / hard difficulty).
+   * Index 0 = cards player 0 was observed picking; index 1 = player 1.
+   */
+  observedPickups?: [string[], string[]];
 }

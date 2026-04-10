@@ -1,4 +1,4 @@
-export { chessGameDefinition, chessSearchFunctions, getChessAIMove } from "./definition";
+export { chessGameDefinition, chessSearchFunctions, getChessAIMove, CHESS_DIFFICULTY_PROFILE } from "./definition";
 export type { ChessState } from "./types";
 export type { Color, PieceType, Piece, Board, ChessMove, CastlingRights, GameStatus } from "./types";
 export {

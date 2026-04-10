@@ -1,4 +1,5 @@
-export { ginRummyGameDefinition, ginRummySearchFunctions, getGinRummyAIMove } from "./definition";
+export { ginRummyGameDefinition, ginRummySearchFunctions, getGinRummyAIMove, GINRUMMY_DIFFICULTY_PROFILE } from "./definition";
+export type { GinAiBehavior } from "./definition";
 export { loadGinRummyState, saveGinRummyState, ginRummyApplyAction } from "./definition";
 export type { GinRummyState, Card, Suit, Rank, Meld, MeldResult, HandResult, GamePhase, GameStatus } from "./types";
 export {

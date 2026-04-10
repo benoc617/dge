@@ -185,4 +185,41 @@ describe("E2E: Admin API", () => {
     const galaxies = (list.data as { galaxies: { id: string }[] }).galaxies;
     expect(galaxies.some((x) => x.id === sessionId)).toBe(false);
   });
+
+  it("deletes chess sessions (players have no Empire rows)", async () => {
+    const u = uniqueName("admchessdel");
+    const signup = await api("/api/auth/signup", {
+      method: "POST",
+      body: JSON.stringify({
+        username: u,
+        fullName: "Admin Chess Delete",
+        email: `${u}@e2e.invalid`,
+        password: TEST_PASSWORD,
+        passwordConfirm: TEST_PASSWORD,
+      }),
+    });
+    expect(signup.status).toBe(201);
+    scheduleTestUserDeletion(u);
+
+    const reg = await api("/api/game/register", {
+      method: "POST",
+      body: JSON.stringify({
+        name: u,
+        password: TEST_PASSWORD,
+        game: "chess",
+        galaxyName: uniqueGalaxy("AdmChessDel"),
+      }),
+    });
+    expect(reg.status).toBe(201);
+    const sessionId = (reg.data as { gameSessionId: string }).gameSessionId;
+
+    const { cookie } = await adminLogin();
+    expect(cookie).toBeTruthy();
+    const del = await adminDeleteGalaxies(cookie!, [sessionId]);
+    expect(del.status).toBe(200);
+    expect((del.data as { deleted: number }).deleted).toBe(1);
+    expect((del.data as { results: { id: string; ok: boolean }[] }).results).toEqual([
+      { id: sessionId, ok: true },
+    ]);
+  });
 });

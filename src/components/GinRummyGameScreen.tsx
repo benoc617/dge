@@ -57,6 +57,7 @@ interface GinStatus {
   layoffOptions: string[];
   turnOrder: { name: string; isAI: boolean; isCurrent: boolean }[];
   game?: string;
+  aiDifficulty?: "easy" | "medium" | "hard";
 }
 
 // ---------------------------------------------------------------------------
@@ -795,6 +796,11 @@ export function GinRummyGameScreen({
           <span className="text-green-600">Hand {status?.handNumber ?? 1}</span>
           {status?.matchTarget && (
             <span className="text-green-600">Match to {status.matchTarget}</span>
+          )}
+          {status?.aiDifficulty && (
+            <span className="text-green-800 text-[10px]">
+              {status.aiDifficulty === "easy" ? "Casual" : status.aiDifficulty === "hard" ? "Shark" : "Competitive"}
+            </span>
           )}
         </div>
         <div className="flex items-center gap-4">

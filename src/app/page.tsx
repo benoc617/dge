@@ -111,13 +111,25 @@ const CLIENT_GAME_REGISTRY: ClientGameMetadata[] = [
         ],
       },
       {
-    key: "turnTimeoutSecs",
-    label: "Turn Timer",
-    description: "Time limit per move before auto-forfeit",
-    type: "select",
-    default: String(43200),
-    options: TURN_TIMER_OPTIONS.map((o) => ({ value: String(o.secs), label: o.label })),
-  },
+        key: "aiDifficulty",
+        label: "AI Difficulty",
+        description: "Strength of the computer opponent",
+        type: "select",
+        default: "medium",
+        options: [
+          { value: "easy",   label: "Beginner"    },
+          { value: "medium", label: "Club Player" },
+          { value: "hard",   label: "Expert"      },
+        ],
+      },
+      {
+        key: "turnTimeoutSecs",
+        label: "Turn Timer",
+        description: "Time limit per move before auto-forfeit",
+        type: "select",
+        default: String(43200),
+        options: TURN_TIMER_OPTIONS.map((o) => ({ value: String(o.secs), label: o.label })),
+      },
     ],
   },
   {
@@ -135,6 +147,18 @@ const CLIENT_GAME_REGISTRY: ClientGameMetadata[] = [
         options: [
           { value: "ai", label: "AI (MCTS)" },
           { value: "human", label: "Human (invite)" },
+        ],
+      },
+      {
+        key: "aiDifficulty",
+        label: "AI Difficulty",
+        description: "Casual: basic MCTS · Competitive: tracks discards · Shark: infers melds",
+        type: "select",
+        default: "medium",
+        options: [
+          { value: "easy",   label: "Casual"      },
+          { value: "medium", label: "Competitive" },
+          { value: "hard",   label: "Shark"       },
         ],
       },
       {
@@ -1000,6 +1024,9 @@ export default function Home() {
 
           {/* Dynamic game-specific options */}
           {meta.createOptions.map((opt) => {
+            // Hide aiDifficulty when playing vs a human opponent
+            if (opt.key === "aiDifficulty" && (gameOptions.opponentMode ?? "ai") === "human") return null;
+
             const val = gameOptions[opt.key] ?? opt.default;
             if (opt.type === "select") {
               return (

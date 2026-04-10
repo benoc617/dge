@@ -97,6 +97,9 @@ interface GinRummyState {
 
   status: "playing" | "hand_complete" | "match_complete" | "resigned" | "timeout" | "draw";
   winner: (0 | 1) | null;
+
+  aiDifficulty?: "easy" | "medium" | "hard"; // chosen at session creation; default "medium"
+  observedPickups?: [string[], string[]];      // cards each player has picked from discard (for AI inference)
 }
 ```
 
@@ -126,6 +129,7 @@ Card keys use `{rank}{suit}` format: e.g., `AH`, `10D`, `KS`.
 Additional options for Gin Rummy:
 - `opponentMode`: `"ai"` (default) or `"human"` (invite-based)
 - `matchTarget`: `"0"` (single hand), `"100"`, `"200"`, `"300"`
+- `aiDifficulty`: `"easy"` | `"medium"` (default) | `"hard"` — see AI difficulty section below
 - `turnTimeoutSecs`: override the 12h default
 
 ### `GET /api/game/status?id=<playerId>`
@@ -183,10 +187,26 @@ sampling** (determinization):
 
 1. Run **N = 6** independent determinizations.
 2. In each: randomly assign the opponent's hidden cards and stock order from
-   the set of cards not visible to the AI (own hand + discard pile).
-3. Run `mctsSearchAsync` (300 iterations, 2.5s budget / 6 = ~416ms each) on the
-   determinized state.
+   the set of cards not visible to the AI (own hand + discard pile, plus observed pickups).
+3. Run `mctsSearchAsync` per the difficulty tier's budget on the determinized state.
 4. **Vote** across all N runs; the most-voted action is executed.
+
+### AI Difficulty
+
+Three difficulty tiers are available, selected at session creation via the `aiDifficulty` option (default `medium`). The tier is stored in `GinRummyState.aiDifficulty` and applied every time `getGinRummyAIMove` is called.
+
+| Tier | Label | Budget (`timeLimitMs`) | `iterations` | `trackDiscards` | `inferOpponentMelds` |
+|------|-------|----------------------|--------------|-----------------|---------------------|
+| `easy` | Casual | 300 ms | 100 | false | false |
+| `medium` | Competitive | 700 ms | 200 | true | false |
+| `hard` | Shark | 2 000 ms | 400 | true | true |
+
+**Behavioral flags** (part of `GinAiBehavior`):
+
+- **`trackDiscards`** — When `true`, cards the opponent picks from the discard pile are recorded in `GinRummyState.observedPickups`. Future determinizations bias the opponent's inferred hand to include those known cards, making the AI aware of what the opponent is collecting.
+- **`inferOpponentMelds`** — When `true` (requires `trackDiscards`), observed pickups are preferentially kept in the determinized opponent hand, further improving the quality of information the AI reasons over. This is the strongest level — the AI effectively "watches" what you pick up.
+
+The profile is exported as `GINRUMMY_DIFFICULTY_PROFILE` from `@dge/ginrummy`. The `GinAiBehavior` interface is also exported.
 
 ### MCTS Compound Moves
 For MCTS internal purposes, a "move" in draw phase is a compound
