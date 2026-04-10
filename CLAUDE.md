@@ -340,9 +340,9 @@ This repo uses an **npm workspace monorepo** where game-agnostic infrastructure 
 - **Game-specific hooks injected via interfaces** — `TurnOrderHooks` / `DoorGameHooks` let the engine call game persistence without knowing SRX
 - **Registration side-effects** — `src/lib/srx-registration.ts` wires SRX and `src/lib/chess-registration.ts` wires Chess into the engine registry (definition + `GameMetadata` + `GameHttpAdapter` + hooks); imported via `src/lib/game-bootstrap.ts`
 - **`src/lib/game-bootstrap.ts`** — single module that imports all game registration files; API routes import this once instead of individual game registration modules
-- **`src/lib/srx-http-adapter.ts`** — implements `GameHttpAdapter` for SRX; extracts game-specific payload construction from API routes (`buildStatus`, `buildLeaderboard`, `buildGameOver`, `getPlayerCreateData`, `onSessionCreated`, `computeHubTurnState`)
-- **`src/lib/chess-http-adapter.ts`** — implements `GameHttpAdapter` for Chess; `onSessionCreated` creates AI or sets up lobby (human vs human); `onPlayerJoined` initializes board state when human opponent joins; stores state in `GameSession.log`
-- **`src/lib/ginrummy-http-adapter.ts`** — implements `GameHttpAdapter` for Gin Rummy; `onSessionCreated` creates AI or sets `waitingForHuman`; `onPlayerJoined` initializes game state when second human joins; `buildStatus` exposes hand (cards hidden from opponent), discard top, legal actions, layoff options, scores; stores state in `GameSession.log`
+- **`src/lib/srx-http-adapter.ts`** — implements `GameHttpAdapter` for SRX; extracts game-specific payload construction from API routes (`buildStatus`, `buildLeaderboard`, `buildGameOver`, `getPlayerCreateData`, `onSessionCreated`, `computeHubTurnState`); implements `isGameOver` (checks `empire.turnsLeft`), `getDoorGameGuards` (reads empire for simultaneous mode pre-checks), `getHubStats` (returns `turnsLeft`/`turnsPlayed` for the hub list)
+- **`src/lib/chess-http-adapter.ts`** — implements `GameHttpAdapter` for Chess; `onSessionCreated` creates AI or sets up lobby (human vs human); `onPlayerJoined` initializes board state when human opponent joins; `isGameOver` checks `session.status === "complete"`; stores state in `GameSession.log`
+- **`src/lib/ginrummy-http-adapter.ts`** — implements `GameHttpAdapter` for Gin Rummy; `onSessionCreated` creates AI or sets `waitingForHuman`; `onPlayerJoined` initializes game state when second human joins; `buildStatus` exposes hand (cards hidden from opponent), discard top, legal actions, layoff options, scores; `isGameOver` checks `session.status === "complete"`; stores state in `GameSession.log`
 - **`src/lib/ginrummy-registration.ts`** — registers Gin Rummy `GameDefinition`, `GameMetadata`, and hooks; `getActivePlayers` hook returns only `GinRummyState.currentPlayer` so `advanceTurn` tracks intra-turn phases (draw then discard by same player) correctly; `processEndTurn` times out the hand
 
 ### Help system (per game)
@@ -379,7 +379,7 @@ Chess (`games/chess/`) and Gin Rummy (`games/ginrummy/`) are reference implement
 2. Create `games/{name}/src/help-content.ts` with `HELP_REGISTRY` entry; add it to the `COMBINED_REGISTRY` in `src/app/api/game/help/route.ts`
 3. Create `games/{name}/src/index.ts` barrel exporting the definition and state type
 4. Create `games/{name}/package.json` as `@dge/{name}` and `games/{name}/docs/GAME-SPEC.md`
-5. Implement `GameMetadata` (lobby card + create-form options) and `GameHttpAdapter` (API payload hooks — `buildStatus`, `getPlayerCreateData`, `defaultTotalTurns`, etc.)
+5. Implement `GameMetadata` (lobby card + create-form options) and `GameHttpAdapter` (API payload hooks — `buildStatus`, `getPlayerCreateData`, `defaultTotalTurns`, `isGameOver`, etc.; see §A.3 of ENGINE-SPEC.md)
 6. Add a `src/lib/{name}-registration.ts` side-effect module that calls `registerGame("{name}", { definition, metadata, adapter, hooks })`
 7. Add one import to `src/lib/game-bootstrap.ts`: `import "@/lib/{name}-registration"` — all routes that import `game-bootstrap` will pick up the new game automatically
 8. Create `src/components/{Name}GameScreen.tsx` for the in-game UI; register it in `GAME_SCREEN_REGISTRY` and `CLIENT_GAME_REGISTRY` in `src/app/page.tsx`

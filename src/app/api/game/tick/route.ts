@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireGame } from "@dge/engine/registry";
 import { SessionBusyError } from "@/lib/db-context";
-import { canPlayerAct } from "@/lib/door-game-turns";
 import { logSrxTiming, msElapsed } from "@/lib/srx-timing";
 import { invalidatePlayer } from "@/lib/game-state-service";
 import "@/lib/game-bootstrap"; // ensure all games are registered before any dispatch
@@ -19,12 +18,12 @@ export async function POST(req: NextRequest) {
   const player = bodyPlayerId
     ? await prisma.player.findUnique({
         where: { id: bodyPlayerId },
-        include: { empire: true },
+        select: { id: true, name: true, isAI: true, gameSessionId: true },
       })
     : await prisma.player.findFirst({
         where: { name: playerName, isAI: false },
         orderBy: { createdAt: "desc" },
-        include: { empire: true },
+        select: { id: true, name: true, isAI: true, gameSessionId: true },
       });
   if (!player) {
     return NextResponse.json({ error: "Player not found" }, { status: 404 });
@@ -42,42 +41,42 @@ export async function POST(req: NextRequest) {
     }
 
     const gameType = sess?.gameType ?? "srx";
+    const { adapter, orchestrator } = requireGame(gameType);
 
-    // For SRX: game is over when turnsLeft hits 0 — return 410 Gone.
-    if (gameType === "srx" && player.empire && player.empire.turnsLeft <= 0) {
-      return NextResponse.json({ error: "Game over — no turns remaining." }, { status: 410 });
+    // Delegate game-over check to the adapter (SRX checks turnsLeft; others check session.status).
+    if (await adapter.isGameOver(player.id)) {
+      return NextResponse.json({ error: "Game over — no more actions." }, { status: 410 });
     }
-    // For any game: session marked complete → 410 Gone.
-    if (sess?.status === "complete") {
-      return NextResponse.json({ error: "Game over — session is complete." }, { status: 410 });
-    }
-
-    const game = requireGame(gameType);
 
     // -----------------------------------------------------------------------
-    // Door-game (simultaneous) tick path — SRX-specific for now
+    // Door-game (simultaneous) tick path
     // -----------------------------------------------------------------------
     if (sess?.turnMode === "simultaneous") {
-      // Pre-lock checks using the SRX synchronous canPlayerAct helper.
-      // Only reached for SRX since chess uses sequential mode exclusively.
-      if (player.empire && !canPlayerAct(player.empire, sess.actionsPerDay)) {
-        logSrxTiming("tick_denied", { playerName, reason: "no_full_turns_left_today" });
-        return NextResponse.json(
-          { error: "No full turns left today in this calendar round." },
-          { status: 409 },
-        );
-      }
-      if (player.empire?.turnOpen) {
-        logSrxTiming("tick_denied", { playerName, reason: "already_open" });
-        return NextResponse.json(
-          { error: "Turn already open — take actions or end_turn.", alreadyOpen: true },
-          { status: 409 },
-        );
+      // Ask the adapter for door-game pre-lock guards. Returns null for non-door games.
+      const guards = adapter.getDoorGameGuards
+        ? await adapter.getDoorGameGuards(player.id, sess.actionsPerDay)
+        : null;
+
+      if (guards !== null) {
+        if (!guards.canAct) {
+          logSrxTiming("tick_denied", { playerName, reason: "no_full_turns_left_today" });
+          return NextResponse.json(
+            { error: "No full turns left today in this calendar round." },
+            { status: 409 },
+          );
+        }
+        if (guards.turnAlreadyOpen) {
+          logSrxTiming("tick_denied", { playerName, reason: "already_open" });
+          return NextResponse.json(
+            { error: "Turn already open — take actions or end_turn.", alreadyOpen: true },
+            { status: 409 },
+          );
+        }
       }
 
       const tLock0 = performance.now();
       try {
-        const { report, turnOpened } = await game.orchestrator.processDoorTick(
+        const { report, turnOpened } = await orchestrator.processDoorTick(
           player.gameSessionId,
           player.id,
         );
@@ -111,7 +110,7 @@ export async function POST(req: NextRequest) {
     // -----------------------------------------------------------------------
     // Sequential tick path
     // -----------------------------------------------------------------------
-    const outcome = await game.orchestrator.processSequentialTick(
+    const outcome = await orchestrator.processSequentialTick(
       player.gameSessionId,
       player.id,
     );
@@ -141,13 +140,14 @@ export async function POST(req: NextRequest) {
   }
 
   // -------------------------------------------------------------------------
-  // No-session tick path (legacy / solo play)
+  // No-session tick path (legacy / solo play) — SRX only.
+  // The SRX adapter's isGameOver reads the empire directly via playerId.
   // -------------------------------------------------------------------------
-  if (!player.empire || player.empire.turnsLeft <= 0) {
+  const { adapter: srxAdapter, definition: srxDef, orchestrator: _srxOrch } = requireGame("srx");
+  if (await srxAdapter.isGameOver(player.id)) {
     return NextResponse.json({ error: "Game over — no turns remaining." }, { status: 410 });
   }
-  const game = requireGame("srx");
-  const report = await game.definition.processFullTick!(player.id);
+  const report = await srxDef.processFullTick!(player.id);
   void invalidatePlayer(player.id).catch(() => {});
   logSrxTiming("tick_route_sequential", {
     playerName, sessionId: null,

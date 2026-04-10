@@ -180,7 +180,18 @@ export const ginRummyHttpAdapter: GameHttpAdapter = {
         state.discardPile.length > 0 ? cardKey(state.discardPile[state.discardPile.length - 1]) : null;
       stockCount = state.deck.length;
       phase = state.phase;
-      handResult = state.handResult;
+      if (state.handResult) {
+        const r = state.handResult;
+        handResult = {
+          ...r,
+          knockerMelds: r.knockerMelds.map((m) => m.map(cardKey)),
+          defenderMelds: r.defenderMelds.map((m) => m.map(cardKey)),
+          knockerDeadwoodCards: r.knockerDeadwoodCards.map(cardKey),
+          defenderDeadwoodCards: r.defenderDeadwoodCards.map(cardKey),
+        };
+      } else {
+        handResult = null;
+      }
       scores = state.scores;
       handsWon = state.handsWon;
       handNumber = state.handNumber;
@@ -259,6 +270,14 @@ export const ginRummyHttpAdapter: GameHttpAdapter = {
       isYourTurn: session.currentTurnPlayerId === player.id,
       currentTurnPlayer: null,
     };
+  },
+
+  async isGameOver(playerId: string): Promise<boolean> {
+    const p = await prisma.player.findUnique({
+      where: { id: playerId },
+      select: { gameSession: { select: { status: true } } },
+    });
+    return p?.gameSession?.status === "complete";
   },
 };
 

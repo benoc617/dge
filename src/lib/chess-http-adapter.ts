@@ -200,4 +200,12 @@ export const chessHttpAdapter: GameHttpAdapter = {
       currentTurnPlayer: null,
     };
   },
+
+  async isGameOver(playerId: string): Promise<boolean> {
+    const p = await prisma.player.findUnique({
+      where: { id: playerId },
+      select: { gameSession: { select: { status: true } } },
+    });
+    return p?.gameSession?.status === "complete";
+  },
 };

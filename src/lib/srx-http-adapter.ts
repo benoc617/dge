@@ -221,17 +221,34 @@ export const srxHttpAdapter: GameHttpAdapter = {
   },
 
   // -------------------------------------------------------------------------
+  // Hub stats (turnsLeft / turnsPlayed for the login games list)
+  // -------------------------------------------------------------------------
+
+  async getHubStats(playerId: string): Promise<Record<string, unknown>> {
+    const emp = await prisma.empire.findUnique({
+      where: { playerId },
+      select: { turnsLeft: true, turnsPlayed: true },
+    });
+    return { turnsLeft: emp?.turnsLeft ?? 0, turnsPlayed: emp?.turnsPlayed ?? 0 };
+  },
+
+  // -------------------------------------------------------------------------
   // Hub turn state (for POST /api/auth/login games list)
   // -------------------------------------------------------------------------
 
   async computeHubTurnState(
-    player: { id: string; empire: { fullTurnsUsedThisRound: number; turnsLeft: number } | null },
+    player: { id: string },
     session: { id: string; turnMode: string; actionsPerDay: number; currentTurnPlayerId: string | null },
   ): Promise<{ isYourTurn: boolean; currentTurnPlayer: string | null }> {
     if (session.turnMode === "simultaneous") {
-      const used = player.empire?.fullTurnsUsedThisRound ?? 0;
+      // Load empire scalars internally — callers no longer pass empire data.
+      const emp = await prisma.empire.findUnique({
+        where: { playerId: player.id },
+        select: { fullTurnsUsedThisRound: true, turnsLeft: true },
+      });
+      const used = emp?.fullTurnsUsedThisRound ?? 0;
       const fullTurnsLeftToday = Math.max(0, session.actionsPerDay - used);
-      const isYourTurn = fullTurnsLeftToday > 0 && (player.empire?.turnsLeft ?? 0) > 0;
+      const isYourTurn = fullTurnsLeftToday > 0 && (emp?.turnsLeft ?? 0) > 0;
       return { isYourTurn, currentTurnPlayer: null };
     }
 
@@ -244,6 +261,43 @@ export const srxHttpAdapter: GameHttpAdapter = {
       };
     }
     return { isYourTurn: false, currentTurnPlayer: null };
+  },
+
+  // -------------------------------------------------------------------------
+  // Game-over guard
+  // -------------------------------------------------------------------------
+
+  async isGameOver(playerId: string): Promise<boolean> {
+    const emp = await prisma.empire.findUnique({
+      where: { playerId },
+      select: { turnsLeft: true },
+    });
+    // No empire row means SRX player was never fully initialized — treat as over.
+    if (!emp || emp.turnsLeft <= 0) return true;
+    const player = await prisma.player.findUnique({
+      where: { id: playerId },
+      select: { gameSession: { select: { status: true } } },
+    });
+    return player?.gameSession?.status === "complete";
+  },
+
+  // -------------------------------------------------------------------------
+  // Door-game guards (simultaneous mode pre-lock checks)
+  // -------------------------------------------------------------------------
+
+  async getDoorGameGuards(
+    playerId: string,
+    actionsPerDay: number,
+  ): Promise<{ canAct: boolean; turnAlreadyOpen: boolean } | null> {
+    const emp = await prisma.empire.findUnique({
+      where: { playerId },
+      select: { turnsLeft: true, fullTurnsUsedThisRound: true, turnOpen: true },
+    });
+    if (!emp) return null;
+    return {
+      canAct: emp.turnsLeft > 0 && emp.fullTurnsUsedThisRound < actionsPerDay,
+      turnAlreadyOpen: emp.turnOpen,
+    };
   },
 };
 

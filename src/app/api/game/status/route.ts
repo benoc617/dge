@@ -14,50 +14,38 @@ import "@/lib/game-bootstrap"; // ensure all games are registered
 // Shared player load (used by both GET and POST)
 // ---------------------------------------------------------------------------
 
-const playerInclude = {
-  empire: {
-    include: {
-      planets: { orderBy: { createdAt: "asc" as const } },
-      army: true,
-      supplyRates: true,
-      research: true,
-    },
-  },
+/** Minimal player shape — empire is loaded by adapter.buildStatus / adapter.isGameOver internally. */
+const playerSelect = {
+  id: true,
+  name: true,
+  isAI: true,
+  gameSessionId: true,
+  passwordHash: true,
+  userId: true,
 } as const;
 
-/**
- * Find a human player by name.
- * Empire filter removed — chess players have no empire record.
- * Game-over detection is delegated to the adapter via buildStatus.
- */
-function findPlayerByName(name: string) {
+type SlimPlayer = {
+  id: string;
+  name: string;
+  isAI: boolean;
+  gameSessionId: string | null;
+  passwordHash: string | null;
+  userId: string | null;
+};
+
+function findPlayerByName(name: string): Promise<SlimPlayer | null> {
   return prisma.player.findFirst({
     where: { name, isAI: false },
     orderBy: { createdAt: "desc" },
-    include: playerInclude,
+    select: playerSelect,
   });
 }
 
-function findPlayerById(id: string) {
+function findPlayerById(id: string): Promise<SlimPlayer | null> {
   return prisma.player.findUnique({
     where: { id },
-    include: playerInclude,
+    select: playerSelect,
   });
-}
-
-/** True when the player's game is over (game-agnostic check). */
-async function isGameOver(player: { empire: { turnsLeft: number } | null; gameSessionId: string | null }): Promise<boolean> {
-  // SRX: turnsLeft exhausted
-  if (player.empire && player.empire.turnsLeft <= 0) return true;
-  // Any game: session status complete
-  if (player.gameSessionId) {
-    const sess = await prisma.gameSession.findUnique({
-      where: { id: player.gameSessionId },
-      select: { status: true },
-    });
-    if (sess?.status === "complete") return true;
-  }
-  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -177,9 +165,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Player not found" }, { status: 404 });
   }
 
-  // Game-over check: SRX uses turnsLeft; any game also checks session.status.
-  if (await isGameOver(player)) {
-    return NextResponse.json({ error: "This game is over. Start a new game!" }, { status: 410 });
+  // Delegate game-over check to the adapter (SRX: turnsLeft; others: session.status).
+  {
+    let gameTypeForCheck = "srx";
+    if (player.gameSessionId) {
+      const sess = await prisma.gameSession.findUnique({
+        where: { id: player.gameSessionId },
+      }) as { gameType?: string | null } | null;
+      gameTypeForCheck = sess?.gameType ?? "srx";
+    }
+    const { adapter } = requireGame(gameTypeForCheck);
+    if (await adapter.isGameOver(player.id)) {
+      return NextResponse.json({ error: "This game is over. Start a new game!" }, { status: 410 });
+    }
   }
 
   if (player.passwordHash) {

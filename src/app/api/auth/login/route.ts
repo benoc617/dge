@@ -32,16 +32,15 @@ export async function POST(req: NextRequest) {
     data: { lastLoginAt: new Date() },
   });
 
+  // Only active sessions — session.status === "active" covers all game types
+  // without needing to inspect the SRX empire table.
   const players = await prisma.player.findMany({
     where: {
       userId: account.id,
       isAI: false,
-      OR: [
-        { empire: { turnsLeft: { gt: 0 } } },
-        { empire: null },
-      ],
+      gameSession: { status: "active" },
     },
-    include: { empire: true, gameSession: true },
+    select: { id: true, name: true, gameSessionId: true, gameSession: true },
     orderBy: { updatedAt: "desc" },
   });
 
@@ -51,8 +50,6 @@ export async function POST(req: NextRequest) {
     gameSessionId: string;
     galaxyName: string | null;
     game: string;
-    turnsLeft: number;
-    turnsPlayed: number;
     inviteCode: string | null;
     isPublic: boolean;
     isYourTurn: boolean;
@@ -60,27 +57,24 @@ export async function POST(req: NextRequest) {
     maxPlayers: number;
     playerCount: number;
     waitingForHuman: boolean;
+    [key: string]: unknown; // game-specific hub stats (e.g. turnsLeft, turnsPlayed for SRX)
   }[] = [];
 
   for (const p of players) {
     const sess = p.gameSession;
     if (!sess || sess.status !== "active") continue;
 
-    const game = sess.gameType ?? "srx";
+    const gameType = (sess as { gameType?: string | null }).gameType ?? "srx";
 
-    // Delegate turn-state computation to the game adapter.
+    // Delegate turn-state and optional game-specific stats to the adapter.
     let isYourTurn = false;
     let currentTurnPlayer: string | null = null;
+    let hubStats: Record<string, unknown> = {};
     try {
-      const { adapter } = requireGame(game);
+      const { adapter } = requireGame(gameType);
       if (adapter.computeHubTurnState) {
         const ts = await adapter.computeHubTurnState(
-          {
-            id: p.id,
-            empire: p.empire
-              ? { fullTurnsUsedThisRound: p.empire.fullTurnsUsedThisRound ?? 0, turnsLeft: p.empire.turnsLeft }
-              : null,
-          },
+          { id: p.id },
           {
             id: sess.id,
             turnMode: sess.turnMode,
@@ -95,6 +89,9 @@ export async function POST(req: NextRequest) {
         isYourTurn = sess.currentTurnPlayerId === p.id;
         currentTurnPlayer = null;
       }
+      if (adapter.getHubStats) {
+        hubStats = await adapter.getHubStats(p.id);
+      }
     } catch {
       // Unknown game type — skip turn state.
     }
@@ -104,9 +101,7 @@ export async function POST(req: NextRequest) {
       playerName: p.name,
       gameSessionId: sess.id,
       galaxyName: sess.galaxyName,
-      game,
-      turnsLeft: p.empire?.turnsLeft ?? 0,
-      turnsPlayed: p.empire?.turnsPlayed ?? 0,
+      game: gameType,
       inviteCode: sess.inviteCode,
       isPublic: sess.isPublic,
       isYourTurn,
@@ -114,6 +109,7 @@ export async function POST(req: NextRequest) {
       maxPlayers: sess.maxPlayers,
       playerCount: (sess.playerNames as string[]).length,
       waitingForHuman: sess.waitingForHuman === true,
+      ...hubStats,
     });
   }
 

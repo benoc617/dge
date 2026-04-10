@@ -20,12 +20,12 @@ export async function POST(req: NextRequest) {
   const player = bodyPlayerId
     ? await prisma.player.findUnique({
         where: { id: bodyPlayerId },
-        include: { empire: true },
+        select: { id: true, name: true, isAI: true, gameSessionId: true },
       })
     : await prisma.player.findFirst({
         where: { name: playerName },
         orderBy: { createdAt: "desc" },
-        include: { empire: true },
+        select: { id: true, name: true, isAI: true, gameSessionId: true },
       });
   if (!player) {
     return NextResponse.json({ error: "Player not found" }, { status: 404 });
@@ -43,14 +43,12 @@ export async function POST(req: NextRequest) {
     where: { id: player.gameSessionId },
   }) as { turnMode: string; waitingForHuman: boolean; status: string; gameType?: string | null } | null;
 
-  // For SRX: game is over when turnsLeft hits 0 — return 410 Gone.
   const gameType = sess?.gameType ?? "srx";
-  if (gameType === "srx" && player.empire && player.empire.turnsLeft <= 0) {
-    return NextResponse.json({ error: "Game over — no turns remaining." }, { status: 410 });
-  }
-  // For any game: session marked complete → 410 Gone.
-  if (sess?.status === "complete") {
-    return NextResponse.json({ error: "Game over — session is complete." }, { status: 410 });
+  const { adapter, orchestrator } = requireGame(gameType);
+
+  // Delegate game-over check to the adapter (SRX checks turnsLeft; others check session.status).
+  if (await adapter.isGameOver(player.id)) {
+    return NextResponse.json({ error: "Game over — no more actions." }, { status: 410 });
   }
 
   if (sess?.waitingForHuman) {
@@ -61,15 +59,13 @@ export async function POST(req: NextRequest) {
     }, { status: 409 });
   }
 
-  const game = requireGame(gameType);
-
   // -------------------------------------------------------------------------
   // Door-game (simultaneous) path
   // -------------------------------------------------------------------------
   if (sess?.turnMode === "simultaneous") {
     const tLock0 = performance.now();
     try {
-      const { result, scheduleAiDrain, constraintError } = await game.orchestrator.processDoorAction(
+      const { result, scheduleAiDrain, constraintError } = await orchestrator.processDoorAction(
         player.gameSessionId,
         player.id,
         action,
@@ -121,7 +117,7 @@ export async function POST(req: NextRequest) {
   // Sequential path
   // -------------------------------------------------------------------------
   const tSeq0 = performance.now();
-  const outcome = await game.orchestrator.processSequentialAction(
+  const outcome = await orchestrator.processSequentialAction(
     player.gameSessionId,
     player.id,
     action,

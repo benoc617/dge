@@ -698,27 +698,42 @@ interface GameHttpAdapter {
   defaultActionsPerDay: number
   defaultTurnTimeoutSecs?: number   // Falls back to 86400 (24h) if unset
 
+  /** True when the player's game is irrevocably over. Called by action/tick/status routes to return 410. */
+  isGameOver(playerId: string): Promise<boolean>
+
   // Optional
   buildLeaderboard?(sessionId: string | null): Promise<unknown[]>
   buildGameOver?(sessionId: string, playerName: string): Promise<Record<string, unknown>>
   onSessionCreated?(sessionId: string, creatorPlayerId: string, options: Record<string, unknown>): Promise<void>
   onPlayerJoined?(sessionId: string, playerId: string): Promise<void>
+  /** Return extra per-game stats for the hub (e.g. SRX returns { turnsLeft, turnsPlayed }). */
+  getHubStats?(playerId: string): Promise<Record<string, unknown>>
   computeHubTurnState?(
-    player: { id: string; empire: { fullTurnsUsedThisRound: number; turnsLeft: number } | null },
+    player: { id: string },   // empire-agnostic; adapter loads game state internally
     session: { id: string; turnMode: string; actionsPerDay: number; currentTurnPlayerId: string | null },
   ): Promise<{ isYourTurn: boolean; currentTurnPlayer: string | null }>
+  /**
+   * Door-game (simultaneous) pre-lock guards. Returns null for non-door games.
+   * Called by the tick route before acquiring the advisory lock.
+   */
+  getDoorGameGuards?(
+    playerId: string, actionsPerDay: number,
+  ): Promise<{ canAct: boolean; turnAlreadyOpen: boolean } | null>
 }
 ```
 
 | Method | When called |
 |--------|-----------|
 | `buildStatus` | `GET/POST /api/game/status` — builds the full response payload |
+| `isGameOver` | `POST /api/game/action`, `/tick`, and resume — returns 410 when the game is over |
 | `getPlayerCreateData` | `POST /api/game/register` / `join` — Prisma nested-create data for new players |
 | `onSessionCreated` | After `GameSession` + creator `Player` committed — game-specific init (AI players, initial state) |
 | `onPlayerJoined` | After a player joins an existing session |
 | `buildLeaderboard` | `GET /api/game/leaderboard` |
 | `buildGameOver` | `POST /api/game/gameover` — accepts `playerId` (preferred) or `playerName` for unambiguous lookup |
-| `computeHubTurnState` | `POST /api/auth/login` — isYourTurn for the hub game list |
+| `getHubStats` | `POST /api/auth/login` — optional per-game stats appended to hub game cards (SRX: `turnsLeft`, `turnsPlayed`) |
+| `computeHubTurnState` | `POST /api/auth/login` — isYourTurn for the hub game list; adapter loads game-specific state internally |
+| `getDoorGameGuards` | `POST /api/game/tick` (simultaneous mode) — pre-lock slot availability checks; null = sequential only |
 
 ### A.4 `TurnOrderHooks` (`@dge/engine`)
 

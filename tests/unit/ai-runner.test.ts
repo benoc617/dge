@@ -10,7 +10,11 @@ const { mockUpdateMany } = vi.hoisted(() => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    gameSession: { updateMany: mockUpdateMany },
+    gameSession: {
+      updateMany: mockUpdateMany,
+      // findUnique returns null → resolvedType defaults to "srx" in recoverSequentialAI.
+      findUnique: vi.fn().mockResolvedValue(null),
+    },
     // Other models used by runAISequence hooks — not exercised in these tests
     // because engineRunAISequence is mocked to return [] without calling hooks.
     player: { findUnique: vi.fn().mockResolvedValue(null) },

@@ -475,13 +475,46 @@ export interface GameHttpAdapter {
   // -------------------------------------------------------------------------
 
   /**
+   * Return extra per-game stats for the hub games list in POST /api/auth/login.
+   * When omitted the route omits game-specific fields from the hub card.
+   *   SRX: returns { turnsLeft, turnsPlayed } sourced from empire.
+   *   Chess / Gin Rummy: not implemented (no empire).
+   */
+  getHubStats?(playerId: string): Promise<Record<string, unknown>>;
+
+  /**
    * Compute isYourTurn / currentTurnPlayer for the hub games list in POST /api/auth/login.
    * When omitted the route uses a generic default: currentTurnPlayerId === player.id.
    *
-   * Receives lightweight Prisma objects already loaded by the login route.
+   * Receives only the player id; the adapter loads any game-specific state
+   * (e.g. SRX empire) internally so callers stay empire-agnostic.
    */
   computeHubTurnState?(
-    player: { id: string; empire: { fullTurnsUsedThisRound: number; turnsLeft: number } | null },
+    player: { id: string },
     session: { id: string; turnMode: string; actionsPerDay: number; currentTurnPlayerId: string | null },
   ): Promise<{ isYourTurn: boolean; currentTurnPlayer: string | null }>;
+
+  // -------------------------------------------------------------------------
+  // Game-over / lifecycle guards (called by multi-game routes)
+  // -------------------------------------------------------------------------
+
+  /**
+   * True when the player's game is irrevocably over (no more actions allowed).
+   * Called by action/tick/status routes to return 410 Gone.
+   *   SRX: turnsLeft <= 0 OR session.status === "complete"
+   *   Chess / Gin Rummy: session.status === "complete"
+   */
+  isGameOver(playerId: string): Promise<boolean>;
+
+  /**
+   * For door-game (simultaneous) mode: check whether a player can open a new
+   * full-turn slot. Returns null for games that don't use simultaneous mode.
+   * Called by the tick route before acquiring the per-session advisory lock.
+   *   SRX: reads empire.turnsLeft / fullTurnsUsedThisRound / turnOpen
+   *   Chess / Gin Rummy: return null (sequential only)
+   */
+  getDoorGameGuards?(
+    playerId: string,
+    actionsPerDay: number,
+  ): Promise<{ canAct: boolean; turnAlreadyOpen: boolean } | null>;
 }
