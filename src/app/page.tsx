@@ -6,6 +6,7 @@ import { SESSION } from "@/lib/game-constants";
 import { apiFetch } from "@/lib/client-fetch";
 import { SrxGameScreen } from "@/components/SrxGameScreen";
 import { ChessGameScreen } from "@/components/ChessGameScreen";
+import { GinRummyGameScreen } from "@/components/GinRummyGameScreen";
 // Re-export GameState so existing imports from "@/app/page" keep working.
 export type { GameState } from "@/lib/srx-game-types";
 
@@ -110,9 +111,49 @@ const CLIENT_GAME_REGISTRY: ClientGameMetadata[] = [
         ],
       },
       {
+    key: "turnTimeoutSecs",
+    label: "Turn Timer",
+    description: "Time limit per move before auto-forfeit",
+    type: "select",
+    default: String(43200),
+    options: TURN_TIMER_OPTIONS.map((o) => ({ value: String(o.secs), label: o.label })),
+  },
+    ],
+  },
+  {
+    game: "ginrummy",
+    displayName: "Gin Rummy",
+    description: "Classic 2-player card game. Form melds, minimize deadwood, knock or go for gin.",
+    supportsJoin: true,
+    createOptions: [
+      {
+        key: "opponentMode",
+        label: "Opponent",
+        description: "Play against the MCTS AI or invite a human player",
+        type: "select",
+        default: "ai",
+        options: [
+          { value: "ai", label: "AI (MCTS)" },
+          { value: "human", label: "Human (invite)" },
+        ],
+      },
+      {
+        key: "matchTarget",
+        label: "Scoring",
+        description: "Single hand or first to reach the target score",
+        type: "select",
+        default: "100",
+        options: [
+          { value: "0", label: "Single hand" },
+          { value: "100", label: "Match to 100" },
+          { value: "200", label: "Match to 200" },
+          { value: "300", label: "Match to 300" },
+        ],
+      },
+      {
         key: "turnTimeoutSecs",
         label: "Turn Timer",
-        description: "Time limit per move before auto-forfeit",
+        description: "Time limit per turn before auto-forfeit",
         type: "select",
         default: String(43200),
         options: TURN_TIMER_OPTIONS.map((o) => ({ value: String(o.secs), label: o.label })),
@@ -183,6 +224,7 @@ type GameScreenProps = {
 const GAME_SCREEN_REGISTRY: Record<string, React.ComponentType<GameScreenProps>> = {
   srx: SrxGameScreen,
   chess: ChessGameScreen,
+  ginrummy: GinRummyGameScreen,
 };
 
 // ---------------------------------------------------------------------------

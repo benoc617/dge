@@ -46,6 +46,7 @@ If a command fails on the host, **do not** treat that as the project failing unt
 - **`games/srx/docs/HOWTOPLAY.md`** — SRX player-facing game guide. Update if you change SRX game mechanics, actions, costs, strategies, or UI controls.
 - **`games/srx/docs/GAME-SPEC.md`** — SRX complete technical specification. Update if you change ANY SRX formula, constant, data model field, action type, tech tree entry, combat mechanic, or turn tick step. This is the authoritative SRX spec — it must always match the code.
 - **`games/chess/docs/GAME-SPEC.md`** — Chess technical specification. Update if you change chess rules, MCTS config, state persistence, or action handling.
+- **`games/ginrummy/docs/GAME-SPEC.md`** — Gin Rummy technical specification. Update if you change Gin Rummy rules, meld detection, MCTS/determinization config, state schema, action types, or scoring.
 - **`CLAUDE.md`** — This file. Update if you change commands, architecture, key file roles, or add new conventions.
 - **`AGENTS.md`** — Cursor / editor agent rules. Update if you change container-only tooling policy, Next.js agent notices, or repo-wide agent constraints.
 
@@ -193,6 +194,7 @@ npm run docker:test:all     # Unit then E2E in container
 | `defender-alerts.test.ts` | Defender alert queue / ALERT lines |
 | `door-game.test.ts` | Door-game register/join, tick+action auto-close, concurrent lock (200+409), round rollover; **human+one AI** and **human+two AIs** (status polls drive AI drain; day rolls) |
 | `chess.test.ts` | Chess game registration, status with board, legal moves API, make move, AI response (MCTS), illegal move rejection, resign, game-over 410 |
+| `ginrummy.test.ts` | Gin Rummy registration (vs AI + vs human), status, draw/discard, AI polling, resign, human vs human lobby/join, legal action validation |
 
 The **game-flow** AI test uses **one** AI opponent and a long timeout for Gemini when the key is set; local fallback still exercises the path.
 - **Agents:** use **`npm run docker:test:e2e`** (runs `test:e2e:only` inside `app` against :3000). Do not run host **`npm run test:e2e`** (boots a second dev server on :3005) unless the user explicitly asks.
@@ -325,6 +327,7 @@ This repo uses an **npm workspace monorepo** where game-agnostic infrastructure 
 | `packages/shell/` | `@dge/shell` | React UI: `GameLayout`, `TurnIndicator`, `useGameState`, `useGameAction`, `GameUIConfig<TState>` |
 | `games/srx/` | `@dge/srx` | SRX game definition: `srxGameDefinition` implements `GameDefinition<SrxWorldState>` |
 | `games/chess/` | `@dge/chess` | Chess game definition: `chessGameDefinition` implements `GameDefinition<ChessState>` (MCTS-only AI, no Gemini) |
+| `games/ginrummy/` | `@dge/ginrummy` | Gin Rummy game definition: `ginRummyGameDefinition` implements `GameDefinition<GinRummyState>` (MCTS + information set sampling) |
 
 ### Separation rules (must not violate)
 
@@ -335,6 +338,8 @@ This repo uses an **npm workspace monorepo** where game-agnostic infrastructure 
 - **`src/lib/game-bootstrap.ts`** — single module that imports all game registration files; API routes import this once instead of individual game registration modules
 - **`src/lib/srx-http-adapter.ts`** — implements `GameHttpAdapter` for SRX; extracts game-specific payload construction from API routes (`buildStatus`, `buildLeaderboard`, `buildGameOver`, `getPlayerCreateData`, `onSessionCreated`, `computeHubTurnState`)
 - **`src/lib/chess-http-adapter.ts`** — implements `GameHttpAdapter` for Chess; `onSessionCreated` creates AI or sets up lobby (human vs human); `onPlayerJoined` initializes board state when human opponent joins; stores state in `GameSession.log`
+- **`src/lib/ginrummy-http-adapter.ts`** — implements `GameHttpAdapter` for Gin Rummy; `onSessionCreated` creates AI or sets `waitingForHuman`; `onPlayerJoined` initializes game state when second human joins; `buildStatus` exposes hand (cards hidden from opponent), discard top, legal actions, layoff options, scores; stores state in `GameSession.log`
+- **`src/lib/ginrummy-registration.ts`** — registers Gin Rummy `GameDefinition`, `GameMetadata`, and hooks; `getActivePlayers` hook returns only `GinRummyState.currentPlayer` so `advanceTurn` tracks intra-turn phases (draw then discard by same player) correctly; `processEndTurn` times out the hand
 
 ### Help system (per game)
 
@@ -357,12 +362,14 @@ When updating game mechanics, update the help file alongside `games/{name}/docs/
 | SRX help (in-game) | `games/srx/src/help-content.ts` | In-game reference (served via API + HelpModal) |
 | Chess game spec | `games/chess/docs/GAME-SPEC.md` | Chess rules, MCTS AI, state persistence |
 | Chess help (in-game) | `games/chess/src/help-content.ts` | In-game reference for chess |
+| Gin Rummy game spec | `games/ginrummy/docs/GAME-SPEC.md` | Gin Rummy rules, MCTS + determinization, state schema |
+| Gin Rummy help (in-game) | `games/ginrummy/src/help-content.ts` | In-game reference for Gin Rummy |
 | Agent instructions | `CLAUDE.md` | This file |
 | Editor agent rules | `AGENTS.md` | Container-only policy, Next.js agent notices |
 
 ### Adding a new game
 
-Chess (`games/chess/`) is the reference implementation of a second game. To add another:
+Chess (`games/chess/`) and Gin Rummy (`games/ginrummy/`) are reference implementations. To add another:
 
 1. Create `games/{name}/src/definition.ts` implementing `GameDefinition<{Name}State>`
 2. Create `games/{name}/src/help-content.ts` with `HELP_REGISTRY` entry; add it to the `COMBINED_REGISTRY` in `src/app/api/game/help/route.ts`
@@ -389,6 +396,10 @@ Chess (`games/chess/`) is the reference implementation of a second game. To add 
 - **`tests/unit/chess-rules.test.ts`** — covers all chess rules (move gen, check, checkmate, stalemate, castling, en passant, promotion, 50-move draw, timeout status)
 - **`tests/unit/chess-mcts.test.ts`** — covers MCTS search functions for chess
 - **`tests/e2e/chess.test.ts`** — covers full chess game flow (register, status, moves, play, AI response, resign, game-over)
+- **`tests/unit/ginrummy-melds.test.ts`** — covers meld detection, deadwood, optimal meld finding, layoff options
+- **`tests/unit/ginrummy-rules.test.ts`** — covers Gin Rummy lifecycle: deal, draw, knock, gin, undercut, scoring, resign
+- **`tests/unit/ginrummy-mcts.test.ts`** — covers MCTS search functions, eval, determinization, AI move generation
+- **`tests/e2e/ginrummy.test.ts`** — covers full Gin Rummy game flow (register, status, draw/discard, AI response, resign, human vs human)
 - **`tests/e2e/`** — full-track sequential + door-game integration (game-flow, multiplayer, door-game, auth, admin)
 
 Shell React components (`GameLayout`, `TurnIndicator`) are integration-tested via the SRX E2E suite; dedicated unit tests would require a jsdom environment (not currently configured).
@@ -464,8 +475,11 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - `src/lib/chess-http-adapter.ts` — `GameHttpAdapter` for chess; `buildStatus` returns board, move history, captured pieces, turn deadline; `onSessionCreated` creates AI (vs AI) or sets `waitingForHuman` (vs Human); `onPlayerJoined` initializes board state when human opponent joins; `defaultTurnTimeoutSecs: 43200` (12h).
 - `src/lib/chess-registration.ts` — registers chess `GameDefinition`, `GameMetadata`, and hooks with the engine; timeout sets `status: "timeout"` (loss on time, not resignation).
 - `src/components/ChessGameScreen.tsx` — full in-game chess UI; interactive board (solid white/black Unicode pieces), optimistic moves, turn timer, lobby waiting state with invite code, promotion dialog, resign, captured pieces panel, move history panel, AI polling.
-- `src/components/TurnTimer.tsx` — shared turn timer countdown component used by both SRX and Chess.
+- `src/components/TurnTimer.tsx` — shared turn timer countdown component used by SRX, Chess, and Gin Rummy.
 - `src/app/api/game/chess/moves/route.ts` — `GET /api/game/chess/moves?id=<playerId>` returns legal moves for the current position.
+- `src/lib/ginrummy-http-adapter.ts` — `GameHttpAdapter` for Gin Rummy; `buildStatus` returns phase-aware player hand, discard top, stock count, legal actions, layoff options, scores, hand result; `onSessionCreated` creates AI or sets `waitingForHuman`; `onPlayerJoined` initializes game state; `defaultTurnTimeoutSecs: 43200` (12h).
+- `src/lib/ginrummy-registration.ts` — registers Gin Rummy `GameDefinition`, `GameMetadata`, and hooks; `getActivePlayers` hook returns only the current player from `GinRummyState` enabling same-player multi-step turns (draw then discard); timeout awards win to opponent.
+- `src/components/GinRummyGameScreen.tsx` — full in-game Gin Rummy UI; card table layout, face-down opponent hand, stock/discard piles, interactive hand with meld/deadwood highlight, knock/gin/layoff buttons, match scoring panel, hand-result overlay, AI polling.
 - `scripts/simulate.ts` — CLI runner for the simulation engine. **`--reset` wipes ALL game data** (sessions, players, scores) — not just simulation artifacts. `--repeat N` only cleans simulation-specific players (`Sim_*`) between runs.
 
 ### Authentication & Lobby System
@@ -500,7 +514,7 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - `SessionLock` — per-session advisory lock support row. One row per active session; used by `withCommitLock` (`INSERT IGNORE` + `SELECT … FOR UPDATE NOWAIT`). Deleted by `deleteGameSession`.
 - `AdminSettings` singleton (`id = "admin"`) stores bcrypt admin password when set from `/admin`; if absent, `INITIAL_ADMIN_PASSWORD` env is used
 - `SystemSettings` singleton (`id = "default"`) stores optional `geminiApiKey`, `geminiModel`, and door-game AI fields (`doorAiDecideBatchSize`, `geminiMaxConcurrent`, `doorAiMaxConcurrentMcts`, `doorAiMoveTimeoutMs`, `mctsBudgetMs` nullable, `compactAiPrompt` boolean); `DATABASE_URL` stays in the environment only. `mctsBudgetMs` controls MCTS search budget for optimal persona (null → uses `MCTS_BUDGET_MS` env or 45000ms default); `compactAiPrompt` enables short Gemini prompts for testing.
-- `GameSession` tracks game sessions with **`gameType`** (default `"srx"`; API field name is `game`), `galaxyName` (unique), `createdBy`, `isPublic`, `inviteCode` (unique, auto-generated 8-char hex), `maxPlayers` (default **50**, max **128**), `currentTurnPlayerId` (whose turn it is, by player ID; null in admin lobby until first human), `turnStartedAt` (**nullable** — null in lobby, no timer), **`waitingForHuman`** (pre-staged admin galaxies until first human joins; also used for chess human-vs-human games waiting for opponent), `turnTimeoutSecs` (default: game-specific via `GameHttpAdapter.defaultTurnTimeoutSecs` — SRX 86400/24h, chess 43200/12h; fallback 86400), **`turnMode`**, **`dayNumber`**, **`actionsPerDay`**, **`roundStartedAt`** (door-game round timer anchor), **`log`** (Json?, stores game state for non-DB-model games like chess), **`status`** (`"active"` | `"complete"`), player list, and outcome. Players are linked via `Player.gameSessionId` and ordered by `Player.turnOrder`.
+- `GameSession` tracks game sessions with **`gameType`** (default `"srx"`; API field name is `game`), `galaxyName` (unique), `createdBy`, `isPublic`, `inviteCode` (unique, auto-generated 8-char hex), `maxPlayers` (default **50**, max **128**), `currentTurnPlayerId` (whose turn it is, by player ID; null in admin lobby until first human), `turnStartedAt` (**nullable** — null in lobby, no timer), **`waitingForHuman`** (pre-staged admin galaxies until first human joins; also used for chess/ginrummy human-vs-human games waiting for opponent), `turnTimeoutSecs` (default: game-specific via `GameHttpAdapter.defaultTurnTimeoutSecs` — SRX 86400/24h, chess/ginrummy 43200/12h; fallback 86400), **`turnMode`**, **`dayNumber`**, **`actionsPerDay`**, **`roundStartedAt`** (door-game round timer anchor), **`log`** (Json?, stores game state for non-DB-model games like chess and ginrummy), **`status`** (`"active"` | `"complete"`), player list, and outcome. Players are linked via `Player.gameSessionId` and ordered by `Player.turnOrder`.
 
 ### Action types (all handled in game-engine.ts)
 - Economy: `buy_planet`, `set_tax_rate`, `set_sell_rates`, `set_supply_rates`
@@ -525,6 +539,7 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - **`src/app/page.tsx` roles**: lobby only — authentication (`login`, `game-select`, `hub`, `join-game`, `create-galaxy` phases), reading `CLIENT_GAME_REGISTRY` (client-side mirror of `GameMetadata`) to render game cards and create-game forms dynamically, and dispatching to the correct `GameScreen`.
 - **`src/components/SrxGameScreen.tsx`** — owns the full SRX in-game UI (header, panels, polling, modals). Receives initial session props from `page.tsx` and manages all game state internally.
 - **`src/components/ChessGameScreen.tsx`** — owns the full chess in-game UI (interactive board, move selection, promotion, resign, captured pieces, AI polling). Registered in `GAME_SCREEN_REGISTRY` as the `chess` game's screen component.
+- **`src/components/GinRummyGameScreen.tsx`** — owns the full Gin Rummy in-game UI (card table, hand rendering, draw/discard/knock/gin/layoff actions, match scoring). Registered in `GAME_SCREEN_REGISTRY` as the `ginrummy` game's screen component.
 - **Screens flow**: Login (**Login** / **Sign up**) → Sign up form → Login → **Game Select** (cards from `CLIENT_GAME_REGISTRY`) → **Command Center / Hub** (your active games for the selected game + Create / Join / Log out) → **Create Galaxy** (dynamic options from `createOptions`) → `GameScreen`; OR Hub → Join → `GameScreen`. Legacy login (no `UserAccount`) goes straight into the game when a matching active player exists.
 - **`game` field** — all API responses use `game` (not `gameType`). The DB column remains `GameSession.gameType`; routes map it at the boundary.
 - **Login screen** (username + password) → **Login** or **Sign up**; link to **`/admin`**

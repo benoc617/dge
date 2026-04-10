@@ -28,6 +28,7 @@ packages/shell/     @dge/shell     — React UI shell (hooks, layout, types)
 packages/shared/    @dge/shared    — shared types, RNG interface
 games/srx/          @dge/srx       — Solar Realms Extreme game definition + components
 games/chess/        @dge/chess     — Chess game definition (MCTS-only AI, no Gemini)
+games/ginrummy/     @dge/ginrummy  — Gin Rummy game definition (MCTS + determinization)
 src/                               — Next.js application (routes, pages, components)
   app/                             — Next.js App Router pages and API routes
   components/                      — shared React components (AdminNav, HelpModal, etc.)
@@ -218,6 +219,7 @@ All games register at application startup via a **bootstrap module**:
 // src/lib/game-bootstrap.ts — import this once in any API route
 import "@/lib/srx-registration";
 import "@/lib/chess-registration";
+import "@/lib/ginrummy-registration";
 // add new games here
 ```
 
@@ -332,6 +334,8 @@ SRX implements its own AI layer on top of the engine infrastructure:
 
 Chess uses engine MCTS directly (no LLM) via `SearchGameFunctions<ChessState>` in `games/chess/src/definition.ts`.
 
+Gin Rummy also uses MCTS via `SearchGameFunctions<GinRummyState>` (`games/ginrummy/src/definition.ts`) but wraps it with **information set sampling** (determinization): because the opponent's hand and stock order are hidden, the AI runs N MCTS passes over randomly sampled complete game states and votes on the best action.
+
 ---
 
 ## 9. Concurrency and Locking (`packages/engine/src/db-context.ts`)
@@ -376,7 +380,7 @@ All tables are defined in `prisma/schema.prisma`.
 
 **SRX-specific tables**: `Empire`, `Planet`, `Army`, `SupplyRates`, `Research`, `Loan`, `Bond`, `Convoy`, `Market`, `Treaty`, `Coalition`, `Message`.
 
-Games that store state compactly (like Chess) use `GameSession.log` (a `Json` field) instead of dedicated tables.
+Games that store state compactly (like Chess and Gin Rummy) use `GameSession.log` (a `Json` field) instead of dedicated tables.
 
 ### Key session fields
 
@@ -565,6 +569,15 @@ Chess-specific tests:
 | Chess rules (move gen, check, mate, castling, en passant, promotion, draw) | Unit | `tests/unit/chess-rules.test.ts` |
 | Chess MCTS search functions | Unit | `tests/unit/chess-mcts.test.ts` |
 | Chess full game flow (register, status, moves, play, AI, resign, game-over) | E2E | `tests/e2e/chess.test.ts` |
+
+Gin Rummy-specific tests:
+
+| Area | Test type | File(s) |
+|------|-----------|---------|
+| Meld detection, deadwood, layoff options | Unit | `tests/unit/ginrummy-melds.test.ts` |
+| Game lifecycle: deal, draw, knock, gin, undercut, scoring, resign | Unit | `tests/unit/ginrummy-rules.test.ts` |
+| MCTS search functions, eval, determinization, AI moves | Unit | `tests/unit/ginrummy-mcts.test.ts` |
+| Full game flow (register, status, draw, discard, AI, resign, human vs human) | E2E | `tests/e2e/ginrummy.test.ts` |
 
 ---
 

@@ -14,6 +14,7 @@ COPY packages/engine/package.json ./packages/engine/package.json
 COPY packages/shell/package.json ./packages/shell/package.json
 COPY games/srx/package.json ./games/srx/package.json
 COPY games/chess/package.json ./games/chess/package.json
+COPY games/ginrummy/package.json ./games/ginrummy/package.json
 COPY scripts/fix-tsc-bin.js ./scripts/fix-tsc-bin.js
 COPY prisma ./prisma
 COPY prisma.config.ts ./

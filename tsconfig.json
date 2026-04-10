@@ -40,7 +40,9 @@
       "@dge/srx": ["./games/srx/src/index.ts"],
       "@dge/srx/*": ["./games/srx/src/*"],
       "@dge/chess": ["./games/chess/src/index.ts"],
-      "@dge/chess/*": ["./games/chess/src/*"]
+      "@dge/chess/*": ["./games/chess/src/*"],
+      "@dge/ginrummy": ["./games/ginrummy/src/index.ts"],
+      "@dge/ginrummy/*": ["./games/ginrummy/src/*"]
     }
   },
   "include": [
