@@ -491,9 +491,9 @@ export const ginRummyGameDefinition: GameDefinition<GinRummyState> = {
     return ginRummySearchFunctions.evalState(state, playerIdx);
   },
 
-  generateCandidateMoves(state, playerId, maxMoves) {
+  generateCandidateMoves(state, playerId) {
     const playerIdx = state.playerIds[0] === playerId ? 0 : 1;
-    return generateMctsCandidates(state, playerIdx, maxMoves ?? 30);
+    return generateMctsCandidates(state, playerIdx, 30);
   },
 
   async processFullAction(
