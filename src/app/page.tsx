@@ -176,8 +176,8 @@ interface HubGame {
   gameSessionId: string;
   galaxyName: string | null;
   game?: string;
-  turnsLeft: number;
-  turnsPlayed: number;
+  turnsLeft?: number;   // SRX only (via getHubStats); undefined for Chess/Gin Rummy
+  turnsPlayed?: number; // SRX only
   inviteCode: string | null;
   isPublic: boolean;
   isYourTurn: boolean;
@@ -297,6 +297,20 @@ export default function Home() {
     setGameSessionId(null);
     setInitialEvents([]);
     createdPlayerIdRef.current = null;
+    // Silently refresh the games list so the hub reflects current session state
+    // (e.g. a game that just ended won't still appear as active).
+    if (authUser && loginPassword) {
+      void apiFetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: authUser.username, password: loginPassword }),
+      }).then(async (res) => {
+        if (res.ok) {
+          const data = await res.json() as { user: typeof authUser; games: HubGame[] };
+          setAuthGames(data.games);
+        }
+      }).catch(() => {});
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -789,7 +803,10 @@ export default function Home() {
                     <div>
                       <div className="text-green-300 text-sm">{g.galaxyName ?? "Unnamed session"}</div>
                       <div className="text-green-700 text-[10px]">
-                        Turn {g.turnsPlayed} · {g.turnsLeft} left · {g.playerCount}/{g.maxPlayers} commanders
+                        {g.turnsPlayed !== undefined && g.turnsLeft !== undefined
+                          ? `Turn ${g.turnsPlayed} · ${g.turnsLeft} left · `
+                          : null}
+                        {g.playerCount}/{g.maxPlayers} players
                         {g.waitingForHuman ? " · LOBBY" : ""}
                       </div>
                       {!g.waitingForHuman && (
