@@ -88,7 +88,12 @@ export const chessHttpAdapter: GameHttpAdapter = {
     }
 
     const session = player.gameSession;
-    const state = session.log as unknown as ChessState;
+    // log defaults to [] in the schema; treat anything that isn't a state object as null
+    const rawLog = session.log;
+    const state: ChessState | null =
+      rawLog && typeof rawLog === "object" && !Array.isArray(rawLog)
+        ? (rawLog as unknown as ChessState)
+        : null;
 
     // Turn info
     let isYourTurn = false;

@@ -120,7 +120,12 @@ export const ginRummyHttpAdapter: GameHttpAdapter = {
     }
 
     const session = player.gameSession;
-    const state = session.log as unknown as GinRummyState | null;
+    // log defaults to [] in the schema; treat anything that isn't a GinRummyState object as null
+    const rawLog = session.log;
+    const state: GinRummyState | null =
+      rawLog && typeof rawLog === "object" && !Array.isArray(rawLog)
+        ? (rawLog as unknown as GinRummyState)
+        : null;
 
     const isYourTurn = state ? state.playerIds[state.currentPlayer] === playerId : false;
 
