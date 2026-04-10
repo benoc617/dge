@@ -16,8 +16,8 @@ import {
   restoreSystemSettingsFromEnv,
   setFastAiTestSettings,
   TEST_PASSWORD,
-} from "./helpers";
-import { ACTIONS_PER_DAY, START } from "../../src/lib/game-constants";
+} from "../helpers";
+import { ACTIONS_PER_DAY, START } from "../../../src/lib/game-constants";
 
 describe("door-game simultaneous mode", () => {
   beforeAll(async () => {

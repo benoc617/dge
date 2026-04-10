@@ -10,8 +10,9 @@ import {
   uniqueName,
   uniqueGalaxy,
   deleteTestGalaxySession,
+  pollStatusUntil,
   TEST_PASSWORD,
-} from "./helpers";
+} from "../helpers";
 
 describe("E2E: Multiplayer Turn Order", () => {
   const galaxy = uniqueGalaxy("MPTest");
@@ -134,13 +135,11 @@ describe("E2E: Multiplayer with AI", () => {
     const { data } = await doAction(humanName, "end_turn");
     expect(data.success).toBe(true);
     expect(data.aiResults).toBeUndefined();
-    // AI uses Gemini when configured; allow up to ~60s for slow API responses
-    for (let i = 0; i < 120; i++) {
-      const st = await getStatus(humanId);
-      if (st.data.isYourTurn) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    const { data: fin } = await getStatus(humanId);
+    // AI uses Gemini when configured; poll up to 80s (E2E config allows 90s per test)
+    const fin = await pollStatusUntil(humanId, (d) => d.isYourTurn === true, {
+      timeoutMs: 80_000,
+      intervalMs: 500,
+    });
     expect(fin.isYourTurn).toBe(true);
   });
 

@@ -181,22 +181,25 @@ npm run docker:test:all     # Unit then E2E in container
 - **Unit tests** (`tests/unit/`): pure logic — RNG, constants, research, combat, espionage, `empire-prisma`, critical-events, `auth` helpers, `system-settings`, `ui-tooltips`, turn-order lobby rules, `gemini` rival pick, `door-game-turns` helpers (`canPlayerAct`, round-timeout), `door-ai-runtime-settings` (clamp/defaults), `ai-concurrency` (semaphore caps), `ai-job-queue` (export presence; DB-backed behaviour covered by E2E), `srx-timing`, `door-game-ui`, etc. No database or server needed. Large orchestration (`game-engine`, `ai-runner`, `simulation`, DB-backed `player-auth`) is covered by **E2E** and **simulation** (`docker compose exec app npm run sim:*`), not duplicated as thin unit shells — add **unit** tests when you extract pure functions worth testing in isolation.
 - **E2E tests** (`tests/e2e/`, needs MySQL + app running): HTTP integration. Files run **sequentially** (`fileParallelism: false` in `vitest.e2e.config.ts`) to avoid DB cross-talk; each suite uses unique names/galaxies. Uses `tests/e2e/helpers.ts` (includes `clearNewEmpireProtectionForPlayers` where tests need to strike a rival). Created sessions are **deleted** after use via admin API (`deleteTestGalaxySession` / `scheduleTestGalaxyDeletion` + `tests/e2e/setup.ts`). Signup test users use **`scheduleTestUserDeletion`** (`deleteTestUserAccountsByUsernames` after galaxies flush).
 
+Tests are organized into subdirectories by game/scope. Engine-level tests (`admin`, `auth-account`, `lobby`, `multi-game`) live at the top level; game-specific tests are grouped under `srx/`, `chess/`, and `ginrummy/`. All import shared helpers via `../helpers`.
+
 | File | Covers |
 |------|--------|
-| `game-flow.test.ts` | Register/login, tick/action split, inline tick, AI setup + background AI turn (poll), turn order |
-| `multiplayer.test.ts` | Multi-human sessions, turn order enforcement |
-| `lobby.test.ts` | Public list, join, invite, galaxy name collision, session patch |
 | `admin.test.ts` | Admin login, galaxies CRUD, settings, password, **users list / force password / delete** |
 | `auth-account.test.ts` | `POST /api/auth/signup`, `POST /api/auth/login`, register links `UserAccount` |
-| `api-routes.test.ts` | `log`, `leaderboard`, `highscores`, `messages`, **gameover** (by name and by playerId), **`ai/run-all`**, **`ai/turn` (error path)** |
-| `protection.test.ts` | Attacks vs protected rival blocked |
-| `combat-reporting.test.ts` | `message` + `actionDetails.combatResult` (pirate, guerrilla) |
-| `defender-alerts.test.ts` | Defender alert queue / ALERT lines |
-| `door-game.test.ts` | Door-game register/join, tick+action auto-close, concurrent lock (200+409), round rollover; **human+one AI** and **human+two AIs** (status polls drive AI drain; day rolls) |
-| `chess.test.ts` | Chess game registration, status with board, legal moves API, make move, AI response (MCTS), illegal move rejection, resign, game-over 410 |
-| `ginrummy.test.ts` | Gin Rummy registration (vs AI + vs human), status, draw/discard, AI polling, resign, human vs human lobby/join, legal action validation |
+| `lobby.test.ts` | Public list, join, invite, galaxy name collision, session patch |
+| `multi-game.test.ts` | Cross-game isolation — SRX + Chess sessions for same user, no name-collision mis-routing |
+| `srx/game-flow.test.ts` | Register/login, tick/action split, inline tick, AI setup + background AI turn (poll), turn order |
+| `srx/multiplayer.test.ts` | Multi-human sessions, turn order enforcement |
+| `srx/api-routes.test.ts` | `log`, `leaderboard`, `highscores`, `messages`, **gameover** (by name and by playerId), **`ai/run-all`**, **`ai/turn` (error path)** |
+| `srx/protection.test.ts` | Attacks vs protected rival blocked |
+| `srx/combat-reporting.test.ts` | `message` + `actionDetails.combatResult` (pirate, guerrilla) |
+| `srx/defender-alerts.test.ts` | Defender alert queue / ALERT lines |
+| `srx/door-game.test.ts` | Door-game register/join, tick+action auto-close, concurrent lock (200+409), round rollover; **human+one AI** and **human+two AIs** (status polls drive AI drain; day rolls) |
+| `chess/chess.test.ts` | Chess game registration, status with board, legal moves API, make move, AI response (MCTS), illegal move rejection, resign, game-over 410 |
+| `ginrummy/ginrummy.test.ts` | Gin Rummy registration (vs AI + vs human), status, draw/discard, AI polling, resign, human vs human lobby/join, legal action validation |
 
-The **game-flow** AI test uses **one** AI opponent and a long timeout for Gemini when the key is set; local fallback still exercises the path.
+The **srx/game-flow** AI test uses **one** AI opponent and a long timeout for Gemini when the key is set; local fallback still exercises the path.
 - **Agents:** use **`npm run docker:test:e2e`** (runs `test:e2e:only` inside `app` against :3000). Do not run host **`npm run test:e2e`** (boots a second dev server on :3005) unless the user explicitly asks.
 - Framework: Vitest. Unit config: `vitest.config.ts` (include `tests/unit/**` only). E2E config: `vitest.e2e.config.ts`.
 - The simulation harness (`docker compose exec app npm run sim:*`) is still available for balance/regression testing.
@@ -395,12 +398,12 @@ Chess (`games/chess/`) and Gin Rummy (`games/ginrummy/`) are reference implement
 - **`tests/unit/turn-order-lobby.test.ts`** — covers `sessionCannotHaveActiveTurn` (sequential)
 - **`tests/unit/chess-rules.test.ts`** — covers all chess rules (move gen, check, checkmate, stalemate, castling, en passant, promotion, 50-move draw, timeout status)
 - **`tests/unit/chess-mcts.test.ts`** — covers MCTS search functions for chess
-- **`tests/e2e/chess.test.ts`** — covers full chess game flow (register, status, moves, play, AI response, resign, game-over)
+- **`tests/e2e/chess/chess.test.ts`** — covers full chess game flow (register, status, moves, play, AI response, resign, game-over)
 - **`tests/unit/ginrummy-melds.test.ts`** — covers meld detection, deadwood, optimal meld finding, layoff options
 - **`tests/unit/ginrummy-rules.test.ts`** — covers Gin Rummy lifecycle: deal, draw, knock, gin, undercut, scoring, resign
 - **`tests/unit/ginrummy-mcts.test.ts`** — covers MCTS search functions, eval, determinization, AI move generation
-- **`tests/e2e/ginrummy.test.ts`** — covers full Gin Rummy game flow (register, status, draw/discard, AI response, resign, human vs human)
-- **`tests/e2e/`** — full-track sequential + door-game integration (game-flow, multiplayer, door-game, auth, admin)
+- **`tests/e2e/ginrummy/ginrummy.test.ts`** — covers full Gin Rummy game flow (register, status, draw/discard, AI response, resign, human vs human)
+- **`tests/e2e/`** — full-track sequential + door-game integration (`srx/`, `chess/`, `ginrummy/` subdirs; engine-level in top-level)
 
 Shell React components (`GameLayout`, `TurnIndicator`) are integration-tested via the SRX E2E suite; dedicated unit tests would require a jsdom environment (not currently configured).
 

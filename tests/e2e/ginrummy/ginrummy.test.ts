@@ -10,7 +10,7 @@ import {
   scheduleTestUserDeletion,
   uniqueGalaxy, uniqueName, sleep,
   TEST_PASSWORD, pollStatusUntil,
-} from "./helpers";
+} from "../helpers";
 
 const GR_GALAXY = uniqueGalaxy("GinRummyE2E");
 const GR_USER = uniqueName("ginrummy_e2e");
@@ -142,15 +142,16 @@ describe("Gin Rummy E2E", () => {
   it("AI takes its turn and returns to player's draw phase", async () => {
     expect(playerId).toBeTruthy();
     // Poll until it's our turn again (AI should complete its draw+discard)
+    // Allow 80s — E2E config sets 90s per test so there's headroom under load
     const data = await pollStatusUntil(
       playerId!,
       (d) => d.isYourTurn === true && d.phase === "draw",
-      { timeoutMs: 30_000, intervalMs: 500 },
+      { timeoutMs: 80_000, intervalMs: 500 },
     );
     expect(data.isYourTurn).toBe(true);
     expect(data.phase).toBe("draw");
     expect((data.myCards as string[]).length).toBe(10); // back to 10 cards
-  }, 35000);
+  });
 
   // ---------------------------------------------------------------------------
   // Legal actions API

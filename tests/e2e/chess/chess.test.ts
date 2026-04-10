@@ -8,8 +8,9 @@ import {
   deleteTestGalaxySession, scheduleTestGalaxyDeletion,
   scheduleTestUserDeletion,
   uniqueGalaxy, uniqueName,
+  pollStatusUntil,
   TEST_PASSWORD,
-} from "./helpers";
+} from "../helpers";
 
 const CHESS_GALAXY = uniqueGalaxy("ChessE2E");
 const CHESS_USER = uniqueName("chess_e2e");
@@ -91,22 +92,17 @@ describe("Chess E2E", () => {
 
   it("AI responds (waits for AI move)", async () => {
     expect(playerId).toBeTruthy();
-    // Poll status until it's our turn again (AI should move)
-    let isOurTurn = false;
-    for (let i = 0; i < 30; i++) {
-      const res = await getStatus(playerId!);
-      const data = res.data as Record<string, unknown>;
-      if (data.isYourTurn === true) {
-        isOurTurn = true;
-        // Verify move history includes AI's move
-        const history = data.moveHistory as string[];
-        expect(history.length).toBeGreaterThanOrEqual(2);
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-    expect(isOurTurn).toBe(true);
-  }, 60000); // long timeout for MCTS
+    // Poll until it's our turn again; MCTS can be slow under load — allow 80s
+    const data = await pollStatusUntil(
+      playerId!,
+      (d) => d.isYourTurn === true,
+      { timeoutMs: 80_000, intervalMs: 500 },
+    );
+    expect(data.isYourTurn).toBe(true);
+    // Verify move history includes AI's move
+    const history = data.moveHistory as string[];
+    expect(history.length).toBeGreaterThanOrEqual(2);
+  });
 
   it("rejects illegal moves", async () => {
     expect(playerId).toBeTruthy();

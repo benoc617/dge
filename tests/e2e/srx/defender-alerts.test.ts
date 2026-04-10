@@ -9,7 +9,7 @@ import {
   clearNewEmpireProtectionForPlayers,
   deleteTestGalaxySession,
   TEST_PASSWORD,
-} from "./helpers";
+} from "../helpers";
 
 /**
  * When P1 guerrilla-attacks P2, P2's next turn tick situation report must include ALERT lines.

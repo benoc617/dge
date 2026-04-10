@@ -10,7 +10,7 @@ import {
   deleteTestGalaxySession,
   scheduleTestGalaxyDeletion,
   TEST_PASSWORD,
-} from "./helpers";
+} from "../helpers";
 
 /**
  * Ensures attack responses include detailed loss breakdowns in `message` and `actionDetails.combatResult`

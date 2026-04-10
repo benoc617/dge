@@ -10,8 +10,9 @@ import {
   uniqueGalaxy,
   deleteTestGalaxySession,
   scheduleTestGalaxyDeletion,
+  pollStatusUntil,
   TEST_PASSWORD,
-} from "./helpers";
+} from "../helpers";
 
 describe("E2E: Game Flow", () => {
   describe("registration and login", () => {
@@ -149,16 +150,13 @@ describe("E2E: Game Flow", () => {
       const { data } = await doAction(name, "end_turn");
       expect(data.success).toBe(true);
       expect(data.aiResults).toBeUndefined();
-      // Poll until it's our turn again (AI calls Gemini; allow up to ~60s)
-      await new Promise((r) => setTimeout(r, 200));
-      for (let i = 0; i < 120; i++) {
-        const st = await getStatus(playerId);
-        if (st.data.isYourTurn) break;
-        await new Promise((r) => setTimeout(r, 500));
-      }
-      const { data: after } = await getStatus(playerId);
+      // Poll until it's our turn again (AI calls Gemini when key present; allow 80s)
+      const after = await pollStatusUntil(playerId, (d) => d.isYourTurn === true, {
+        timeoutMs: 80_000,
+        intervalMs: 500,
+      });
       expect(after.isYourTurn).toBe(true);
-    }, 90_000);
+    });
 
     it("turn order shows all players", async () => {
       const { data } = await getStatus(playerId);

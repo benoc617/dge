@@ -19,7 +19,7 @@ import {
   scheduleTestGalaxyDeletion,
   deleteTestGalaxySession,
   TEST_PASSWORD,
-} from "./helpers";
+} from "../helpers";
 
 describe("E2E: auxiliary API routes", () => {
   it("GET /api/game/log returns export shape", async () => {
