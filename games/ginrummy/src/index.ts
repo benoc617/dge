@@ -8,7 +8,9 @@ export {
 } from "./rules";
 export {
   cardKey, cardFromKey, cardValue, rankIndex,
-  findBestMelds, calculateDeadwood, isValidMeld, isValidMeldArrangement,
+  isValidSet, isValidRun, isValidMeld,
+  generateAllPossibleMelds,
+  findBestMelds, calculateDeadwood, isValidMeldArrangement,
   findLayoffOptions,
 } from "./melds";
 export { GINRUMMY_HELP_TITLE, GINRUMMY_HELP_CONTENT, HELP_REGISTRY } from "./help-content";

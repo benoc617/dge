@@ -167,10 +167,10 @@ describe("findBestMelds", () => {
   });
 
   it("prefers partial set over complete isolation", () => {
-    // 3 kings = set (0 deadwood for those), plus other junk
+    // 3 kings = set, remaining junk = 2+4+6+8+3+5+7 = 35
     const hand = cs("KH", "KD", "KC", "2H", "4D", "6C", "8S", "3H", "5D", "7C");
     const result = findBestMelds(hand);
-    expect(result.deadwoodValue).toBeLessThan(30); // Kings should be melded
+    expect(result.deadwoodValue).toBe(35); // Kings melded; non-K deadwood = 35
     expect(result.melds.some(m => m.every(c => c.rank === "K"))).toBe(true);
   });
 });

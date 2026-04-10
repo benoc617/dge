@@ -368,6 +368,7 @@ function scoreKnock(state: GinRummyState, _defenderIdx: 0 | 1): ActionResult {
     defenderDeadwoodCards: defenderBest.deadwood,
   };
 
+  s.knockerMelds = null; // melds are now embedded in handResult; clear from state
   return applyHandResult(s);
 }
 
