@@ -660,8 +660,7 @@ export default function Home() {
             </button>
           </div>
         </form>
-        <p className="text-green-800 text-xs mt-4">A turn-based galactic empire management game</p>
-        <Link href="/admin" className="text-green-800 text-xs mt-3 hover:text-green-500 underline">Admin</Link>
+        <Link href="/admin" className="text-green-800 text-xs mt-4 hover:text-green-500 underline">Admin</Link>
       </main>
     );
   }
