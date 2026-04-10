@@ -26,11 +26,13 @@ services:
     volumes:
       - srx_mysqldata:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      # Connect as the app user (srx) so the healthcheck reflects actual Prisma readiness,
+      # not just whether the daemon socket is open.
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "srx", "-psrx"]
       interval: 5s
       timeout: 5s
-      retries: 12
-      start_period: 30s
+      retries: 24
+      start_period: 45s
 
   app:
     build:
@@ -62,8 +64,8 @@ services:
         ]
       interval: 5s
       timeout: 5s
-      retries: 12
-      start_period: 45s
+      retries: 24
+      start_period: 90s
 
   ai-worker:
     build:

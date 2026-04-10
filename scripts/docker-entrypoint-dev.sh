@@ -29,7 +29,23 @@ fi
 
 echo "[srx] prisma generate + db push…"
 npx prisma generate
-npx prisma db push
+
+# Retry db push until MySQL is ready.
+# MySQL passes its healthcheck probe (mysqladmin ping) slightly before it is
+# fully open to client connections after a cold-start or host reboot.
+# set -e is in effect, but POSIX sh does not exit on a non-zero exit from a
+# command that is the condition of an if/while/until, so this loop is safe.
+_DB_PUSH_MAX=24  # 24 × 5 s = 2 min ceiling
+_DB_PUSH_N=0
+until npx prisma db push 2>&1; do
+  _DB_PUSH_N=$((_DB_PUSH_N + 1))
+  if [ "$_DB_PUSH_N" -ge "$_DB_PUSH_MAX" ]; then
+    echo "[srx] FATAL: MySQL still unreachable after ${_DB_PUSH_MAX} attempts." >&2
+    exit 1
+  fi
+  echo "[srx] MySQL not ready yet — retrying in 5 s… (${_DB_PUSH_N}/${_DB_PUSH_MAX})"
+  sleep 5
+done
 
 if [ -n "${SRX_WORKER_SCRIPT:-}" ]; then
   echo "[srx] worker mode: ${SRX_WORKER_SCRIPT} (user: $(whoami))…"
